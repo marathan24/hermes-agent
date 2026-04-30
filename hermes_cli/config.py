@@ -609,9 +609,11 @@ DEFAULT_CONFIG = {
     # Server-side native tool prefiltering. For configured platforms, Hermes
     # embeds the current turn, searches a profile-scoped tool schema index,
     # and sends only the top K native tool schemas to the model. If embeddings
-    # or the index fail, the agent falls back to the full configured toolset.
+    # or the index fail, the agent falls back to the full configured toolset
+    # unless required=true.
     "tool_retrieval": {
         "enabled": True,
+        "required": False,
         "platforms": ["acp"],
         "top_k": 3,
         "provider": "openai-compatible",

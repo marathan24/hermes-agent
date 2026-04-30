@@ -165,7 +165,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, is_truthy_value, normalize_proxy_url
 from hermes_cli.config import cfg_get
 
 
@@ -4787,6 +4787,10 @@ class AIAgent:
         self._current_valid_tool_names = set(self._all_valid_tool_names)
         cfg = (config or {}).get("tool_retrieval") or {}
         self._tool_retrieval_config = cfg if isinstance(cfg, dict) else {}
+        self._tool_retrieval_required = is_truthy_value(
+            self._tool_retrieval_config.get("required", False),
+            default=False,
+        )
         self._tool_retrieval_last_fallback_reason = None
         try:
             from agent.tool_retrieval import tool_retrieval_enabled
@@ -4812,6 +4816,8 @@ class AIAgent:
         return set(self.valid_tool_names or set())
 
     def _reset_api_tools_to_full_catalog(self, reason: str | None = None) -> None:
+        if reason and getattr(self, "_tool_retrieval_required", False):
+            raise RuntimeError(f"Tool retrieval is required but unavailable: {reason}")
         self._current_api_tools = list(getattr(self, "_all_tools", None) or self.tools or [])
         self._current_valid_tool_names = set(
             getattr(self, "_all_valid_tool_names", None) or self.valid_tool_names or set()

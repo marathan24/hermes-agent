@@ -2454,6 +2454,99 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
                 _print_info(f"{srv_name}  {color('all tools enabled', Colors.DIM)}")
 
 
+def _parse_toolsets_arg(raw: object) -> list[str] | None:
+    """Normalize comma-separated or repeated toolset values."""
+    if raw in (None, ""):
+        return None
+    if isinstance(raw, str):
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    if isinstance(raw, (list, tuple, set)):
+        result: list[str] = []
+        for item in raw:
+            if isinstance(item, str):
+                result.extend(part.strip() for part in item.split(",") if part.strip())
+            elif item is not None:
+                result.append(str(item))
+        return result or None
+    return [str(raw)]
+
+
+def tools_prewarm_command(args):
+    """Build the configured tool-retrieval embedding index for a platform."""
+    platform = str(getattr(args, "platform", "cli") or "cli")
+    json_output = bool(getattr(args, "json", False))
+    explicit_toolsets = _parse_toolsets_arg(getattr(args, "toolsets", None))
+
+    def emit(payload: dict) -> None:
+        if json_output:
+            print(_json.dumps(payload, sort_keys=True))
+        elif payload.get("success"):
+            _print_success(
+                f"Prewarmed {payload.get('tool_count', 0)} tool embeddings "
+                f"for {platform}: {payload.get('index_path')}"
+            )
+        else:
+            _print_error(str(payload.get("error") or "tool prewarm failed"))
+
+    try:
+        config = load_config()
+        if platform not in PLATFORMS and not explicit_toolsets:
+            valid = ", ".join(sorted(PLATFORMS))
+            raise ValueError(
+                f"Unknown platform '{platform}'. Pass --toolsets explicitly or use one of: {valid}"
+            )
+
+        tool_retrieval_cfg = config.get("tool_retrieval") or {}
+        if not isinstance(tool_retrieval_cfg, dict):
+            tool_retrieval_cfg = {}
+
+        from agent.tool_retrieval import (
+            index_file_path,
+            load_or_build_index,
+            tool_retrieval_enabled,
+        )
+        if not tool_retrieval_enabled(config, platform):
+            raise RuntimeError(
+                f"tool_retrieval is not enabled for platform '{platform}'"
+            )
+
+        toolsets = explicit_toolsets
+        if toolsets is None:
+            toolsets = sorted(_get_platform_tools(config, platform))
+
+        from model_tools import get_tool_definitions
+        if json_output:
+            import contextlib
+            import io
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+                index = load_or_build_index(tools, tool_retrieval_cfg, platform=platform)
+        else:
+            tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+            index = load_or_build_index(tools, tool_retrieval_cfg, platform=platform)
+
+        if not tools:
+            raise RuntimeError("no tool schemas available to prewarm")
+
+        metadata = index.get("metadata") if isinstance(index, dict) else {}
+        emit(
+            {
+                "success": True,
+                "platform": platform,
+                "toolsets": toolsets,
+                "tool_count": len(tools),
+                "index_path": str(index_file_path(tool_retrieval_cfg)),
+                "metadata": metadata if isinstance(metadata, dict) else {},
+            }
+        )
+    except Exception as exc:
+        emit({"success": False, "platform": platform, "error": str(exc)})
+        raise SystemExit(1) from exc
+
+
 def tools_disable_enable_command(args):
     """Enable, disable, or list tools for a platform.
 

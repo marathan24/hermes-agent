@@ -1,6 +1,8 @@
 import sys
 import types
 
+import pytest
+
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
@@ -71,6 +73,34 @@ def test_non_acp_prefilter_uses_full_catalog():
     assert agent._valid_tool_names_for_current_api_call() == {"read_file", "terminal", "patch"}
 
 
+def test_cli_prefilter_selects_tools_when_platform_enabled():
+    agent = _bare_agent("cli")
+    agent._configure_tool_retrieval(
+        {
+            "tool_retrieval": {
+                "enabled": True,
+                "platforms": ["cli"],
+                "top_k": 3,
+            }
+        }
+    )
+
+    def fake_select(tools, query, config, platform=None):
+        assert platform == "cli"
+        assert "fix test" in query
+        return ToolRetrievalResult(
+            selected_tools=[tools[2]],
+            selected_names=["patch"],
+            scores={"patch": 1.0},
+        )
+
+    agent._tool_retrieval_select_fn = fake_select
+    agent._prepare_tool_prefilter_for_api_call("fix test", [{"role": "user", "content": "fix test"}])
+
+    assert [tool["function"]["name"] for tool in agent._tools_for_api()] == ["patch"]
+    assert agent._valid_tool_names_for_current_api_call() == {"patch"}
+
+
 def test_prefilter_failure_falls_back_to_full_catalog():
     agent = _bare_agent("acp")
 
@@ -86,6 +116,28 @@ def test_prefilter_failure_falls_back_to_full_catalog():
         "patch",
     ]
     assert agent._valid_tool_names_for_current_api_call() == {"read_file", "terminal", "patch"}
+
+
+def test_required_prefilter_failure_raises():
+    agent = _bare_agent("cli")
+    agent._configure_tool_retrieval(
+        {
+            "tool_retrieval": {
+                "enabled": True,
+                "required": True,
+                "platforms": ["cli"],
+                "top_k": 3,
+            }
+        }
+    )
+
+    def fail_select(*_args, **_kwargs):
+        raise RuntimeError("embedding service unavailable")
+
+    agent._tool_retrieval_select_fn = fail_select
+
+    with pytest.raises(RuntimeError, match="Tool retrieval is required.*embedding service unavailable"):
+        agent._prepare_tool_prefilter_for_api_call("fix test", [{"role": "user", "content": "fix test"}])
 
 
 def test_tool_name_repair_only_uses_current_api_tool_names():

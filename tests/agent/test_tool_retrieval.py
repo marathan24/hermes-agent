@@ -1,7 +1,10 @@
 import json
+import sys
+import types
 
 from agent.tool_retrieval import (
     build_tool_retrieval_query,
+    embed_texts_openai_compatible,
     index_file_path,
     select_tools_for_query,
     tool_schema_hash,
@@ -141,3 +144,42 @@ def test_build_tool_retrieval_query_includes_recent_tool_context():
     assert "fix the failing test" in query
     assert "Recent assistant tool calls: terminal" in query
     assert "pytest failed in test_example" in query
+
+
+def test_embed_texts_openai_compatible_uses_openrouter_config(monkeypatch):
+    captured = {}
+
+    class FakeEmbeddings:
+        def create(self, *, model, input):
+            captured["model"] = model
+            captured["input"] = input
+            return types.SimpleNamespace(
+                data=[
+                    types.SimpleNamespace(embedding=[0.1, 0.2, 0.3]),
+                ]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.embeddings = FakeEmbeddings()
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeOpenAI))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+    vectors = embed_texts_openai_compatible(
+        ["tool schema"],
+        {
+            "model": "openai/text-embedding-3-small",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_env": "OPENROUTER_API_KEY",
+        },
+    )
+
+    assert vectors == [[0.1, 0.2, 0.3]]
+    assert captured["client_kwargs"] == {
+        "api_key": "or-test-key",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
+    assert captured["model"] == "openai/text-embedding-3-small"
+    assert captured["input"] == ["tool schema"]

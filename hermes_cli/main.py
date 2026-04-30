@@ -9366,12 +9366,37 @@ Examples:
         help="Platform to apply to (default: cli)",
     )
 
+    # hermes tools prewarm [--platform cli] [--toolsets hermes-cli] [--json]
+    tools_prewarm_p = tools_sub.add_parser(
+        "prewarm",
+        help="Build the configured tool-retrieval embedding index",
+    )
+    tools_prewarm_p.add_argument(
+        "--platform",
+        default="cli",
+        help="Platform to prewarm for (default: cli)",
+    )
+    tools_prewarm_p.add_argument(
+        "--toolsets",
+        default=None,
+        help="Comma-separated toolsets to index (default: platform configuration)",
+    )
+    tools_prewarm_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON output",
+    )
+
     def cmd_tools(args):
         action = getattr(args, "tools_action", None)
         if action in ("list", "disable", "enable"):
             from hermes_cli.tools_config import tools_disable_enable_command
 
             tools_disable_enable_command(args)
+        elif action == "prewarm":
+            from hermes_cli.tools_config import tools_prewarm_command
+
+            tools_prewarm_command(args)
         else:
             _require_tty("tools")
             from hermes_cli.tools_config import tools_command
