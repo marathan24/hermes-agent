@@ -268,6 +268,81 @@ def _clear_tool_defs_cache() -> None:
     _tool_defs_cache.clear()
 
 
+def _tool_definition_name(tool: Dict[str, Any]) -> str:
+    return str((tool or {}).get("function", {}).get("name") or "")
+
+
+def get_tool_definitions_for_names(
+    tool_definitions: List[Dict[str, Any]],
+    names: List[str] | set[str] | tuple[str, ...],
+) -> List[Dict[str, Any]]:
+    """Return a selected native-schema subset while preserving dynamic rewrites.
+
+    ``get_tool_definitions()`` remains the source of availability filtering and
+    provider-compatible schema cleanup. This helper narrows that already-built
+    list to per-call tool names, then refreshes dynamic cross-tool schema text
+    that depends on the selected set rather than the full available set.
+    """
+    wanted = {str(name) for name in (names or []) if str(name)}
+    if not wanted:
+        return []
+
+    by_name = {
+        _tool_definition_name(tool): tool
+        for tool in (tool_definitions or [])
+        if _tool_definition_name(tool)
+    }
+    selected = [by_name[name] for name in (names or []) if str(name) in wanted and str(name) in by_name]
+    selected_names = {_tool_definition_name(tool) for tool in selected}
+
+    if "execute_code" in selected_names:
+        try:
+            from tools.code_execution_tool import (
+                SANDBOX_ALLOWED_TOOLS,
+                build_execute_code_schema,
+                _get_execution_mode,
+            )
+            sandbox_enabled = SANDBOX_ALLOWED_TOOLS & selected_names
+            dynamic_schema = build_execute_code_schema(
+                sandbox_enabled,
+                mode=_get_execution_mode(),
+            )
+            selected = [
+                (
+                    {"type": "function", "function": dynamic_schema}
+                    if _tool_definition_name(tool) == "execute_code"
+                    else tool
+                )
+                for tool in selected
+            ]
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("execute_code selected-schema refresh skipped: %s", e)
+
+    if "browser_navigate" in selected_names and not ({"web_search", "web_extract"} & selected_names):
+        refreshed = []
+        for tool in selected:
+            if _tool_definition_name(tool) != "browser_navigate":
+                refreshed.append(tool)
+                continue
+            func = dict(tool.get("function") or {})
+            desc = str(func.get("description") or "")
+            desc = desc.replace(
+                " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
+                "",
+            )
+            func["description"] = desc
+            refreshed.append({"type": "function", "function": func})
+        selected = refreshed
+
+    try:
+        from tools.schema_sanitizer import sanitize_tool_schemas
+        selected = sanitize_tool_schemas(selected)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("Selected schema sanitization skipped: %s", e)
+
+    return selected
+
+
 def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,

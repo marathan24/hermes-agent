@@ -109,6 +109,7 @@ else:
 # Import our tool system
 from model_tools import (
     get_tool_definitions,
+    get_tool_definitions_for_names,
     get_toolset_for_tool,
     handle_function_call,
     check_toolset_requirements,
@@ -2031,6 +2032,8 @@ class AIAgent:
                     self.valid_tool_names.add(_tname)
                     self._context_engine_tool_names.add(_tname)
                     _existing_tool_names.add(_tname)
+
+        self._configure_tool_retrieval(_agent_cfg)
 
         # Notify context engine of session start
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -4772,6 +4775,98 @@ class AIAgent:
         """Check if an interrupt has been requested."""
         return self._interrupt_requested
 
+    def _configure_tool_retrieval(self, config: dict | None) -> None:
+        """Initialize per-call tool prefiltering state."""
+        self._all_tools = list(self.tools or [])
+        self._all_valid_tool_names = {
+            tool.get("function", {}).get("name")
+            for tool in self._all_tools
+            if isinstance(tool, dict) and tool.get("function", {}).get("name")
+        }
+        self._current_api_tools = list(self._all_tools)
+        self._current_valid_tool_names = set(self._all_valid_tool_names)
+        cfg = (config or {}).get("tool_retrieval") or {}
+        self._tool_retrieval_config = cfg if isinstance(cfg, dict) else {}
+        self._tool_retrieval_last_fallback_reason = None
+        try:
+            from agent.tool_retrieval import tool_retrieval_enabled
+            self._tool_retrieval_enabled = tool_retrieval_enabled(
+                config or {},
+                self.platform,
+            )
+        except Exception:
+            self._tool_retrieval_enabled = False
+
+    def _tools_for_api(self) -> list:
+        tools = getattr(self, "_current_api_tools", None)
+        if isinstance(tools, list):
+            return tools
+        return self.tools or []
+
+    def _valid_tool_names_for_current_api_call(self) -> set:
+        names = getattr(self, "_current_valid_tool_names", None)
+        if isinstance(names, set):
+            return set(names)
+        if isinstance(names, (list, tuple)):
+            return {str(name) for name in names if str(name)}
+        return set(self.valid_tool_names or set())
+
+    def _reset_api_tools_to_full_catalog(self, reason: str | None = None) -> None:
+        self._current_api_tools = list(getattr(self, "_all_tools", None) or self.tools or [])
+        self._current_valid_tool_names = set(
+            getattr(self, "_all_valid_tool_names", None) or self.valid_tool_names or set()
+        )
+        if reason:
+            last_reason = getattr(self, "_tool_retrieval_last_fallback_reason", None)
+            if reason != last_reason:
+                logger.info("Tool retrieval fallback for %s: %s", self.platform or "unknown", reason)
+                self._tool_retrieval_last_fallback_reason = reason
+
+    def _prepare_tool_prefilter_for_api_call(self, user_message, messages: list) -> None:
+        """Select the native tool schemas for the next API call."""
+        if not getattr(self, "_tool_retrieval_enabled", False):
+            self._reset_api_tools_to_full_catalog()
+            return
+
+        all_tools = list(getattr(self, "_all_tools", None) or self.tools or [])
+        if not all_tools:
+            self._reset_api_tools_to_full_catalog("no tools available")
+            return
+
+        try:
+            from agent.tool_retrieval import build_tool_retrieval_query, select_tools_for_query
+            query = build_tool_retrieval_query(user_message, messages)
+            select_fn = getattr(self, "_tool_retrieval_select_fn", select_tools_for_query)
+            result = select_fn(
+                all_tools,
+                query,
+                getattr(self, "_tool_retrieval_config", {}) or {},
+                platform=self.platform,
+            )
+            if getattr(result, "fallback_reason", None):
+                self._reset_api_tools_to_full_catalog(result.fallback_reason)
+                return
+            selected_names = list(getattr(result, "selected_names", None) or [])
+            selected_tools = get_tool_definitions_for_names(all_tools, selected_names)
+            if not selected_tools:
+                self._reset_api_tools_to_full_catalog("retrieval returned no usable schemas")
+                return
+            self._current_api_tools = selected_tools
+            self._current_valid_tool_names = {
+                tool.get("function", {}).get("name")
+                for tool in selected_tools
+                if isinstance(tool, dict) and tool.get("function", {}).get("name")
+            }
+            self._tool_retrieval_last_fallback_reason = None
+            if self.verbose_logging:
+                logger.debug(
+                    "Tool retrieval selected %s for platform=%s query=%r",
+                    sorted(self._current_valid_tool_names),
+                    self.platform or "",
+                    query[:200],
+                )
+        except Exception as exc:
+            self._reset_api_tools_to_full_catalog(str(exc))
 
 
 
@@ -5252,13 +5347,15 @@ class AIAgent:
         See #14784 for the original reports (TodoTool_tool, Patch_tool,
         BrowserClick_tool were all returning "Unknown tool" before).
 
-        Returns the repaired name if found in valid_tool_names, else None.
+        Returns the repaired name if found in the currently exposed tool set,
+        else None.
         """
         import re
         from difflib import get_close_matches
 
         if not tool_name:
             return None
+        valid_tool_names = self._valid_tool_names_for_current_api_call()
 
         def _norm(s: str) -> str:
             return s.lower().replace("-", "_").replace(" ", "_")
@@ -5275,10 +5372,10 @@ class AIAgent:
 
         # Cheap fast-paths first — these cover the common case.
         lowered = tool_name.lower()
-        if lowered in self.valid_tool_names:
+        if lowered in valid_tool_names:
             return lowered
         normalized = _norm(tool_name)
-        if normalized in self.valid_tool_names:
+        if normalized in valid_tool_names:
             return normalized
 
         # Build the full candidate set for class-like emissions.
@@ -5295,11 +5392,11 @@ class AIAgent:
             cands |= extra
 
         for c in cands:
-            if c and c in self.valid_tool_names:
+            if c and c in valid_tool_names:
                 return c
 
         # Fuzzy match as last resort.
-        matches = get_close_matches(lowered, self.valid_tool_names, n=1, cutoff=0.7)
+        matches = get_close_matches(lowered, valid_tool_names, n=1, cutoff=0.7)
         if matches:
             return matches[0]
 
@@ -8200,6 +8297,7 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
+        api_tools = self._tools_for_api()
         if self.api_mode == "anthropic_messages":
             _transport = self._get_transport()
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
@@ -8211,7 +8309,7 @@ class AIAgent:
             return _transport.build_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
-                tools=self.tools,
+                tools=api_tools,
                 max_tokens=ephemeral_out if ephemeral_out is not None else self.max_tokens,
                 reasoning_config=self.reasoning_config,
                 is_oauth=self._is_anthropic_oauth,
@@ -8231,7 +8329,7 @@ class AIAgent:
             return _bt.build_kwargs(
                 model=self.model,
                 messages=api_messages,
-                tools=self.tools,
+                tools=api_tools,
                 max_tokens=self.max_tokens or 4096,
                 region=region,
                 guardrail_config=guardrail,
@@ -8255,7 +8353,7 @@ class AIAgent:
             return _ct.build_kwargs(
                 model=self.model,
                 messages=_msgs_for_codex,
-                tools=self.tools,
+                tools=api_tools,
                 reasoning_config=self.reasoning_config,
                 session_id=getattr(self, "session_id", None),
                 max_tokens=self.max_tokens,
@@ -8341,7 +8439,7 @@ class AIAgent:
         return _ct.build_kwargs(
             model=self.model,
             messages=_msgs_for_chat,
-            tools=self.tools,
+            tools=api_tools,
             base_url=self.base_url,
             timeout=self._resolved_api_call_timeout(),
             max_tokens=self.max_tokens,
@@ -9196,11 +9294,12 @@ class AIAgent:
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
         else:
+            active_tool_names = self._valid_tool_names_for_current_api_call()
             return handle_function_call(
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
-                enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                enabled_tools=list(active_tool_names) if active_tool_names else None,
                 skip_pre_tool_call_hook=True,
             )
 
@@ -9820,11 +9919,12 @@ class AIAgent:
                     spinner.start()
                 _spinner_result = None
                 try:
+                    active_tool_names = self._valid_tool_names_for_current_api_call()
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        enabled_tools=list(active_tool_names) if active_tool_names else None,
                         skip_pre_tool_call_hook=True,
                     )
                     _spinner_result = function_result
@@ -9840,11 +9940,12 @@ class AIAgent:
                         self._vprint(f"  {cute_msg}")
             else:
                 try:
+                    active_tool_names = self._valid_tool_names_for_current_api_call()
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        enabled_tools=list(active_tool_names) if active_tool_names else None,
                         skip_pre_tool_call_hook=True,
                     )
                 except Exception as tool_error:
@@ -10762,6 +10863,9 @@ class AIAgent:
             # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
             _sanitize_messages_surrogates(api_messages)
 
+            self._prepare_tool_prefilter_for_api_call(original_user_message, messages)
+            api_tools_for_call = self._tools_for_api()
+
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = estimate_messages_tokens_rough(api_messages)
@@ -10772,7 +10876,7 @@ class AIAgent:
             if not self.quiet_mode:
                 self._vprint(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
                 self._vprint(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
-                self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
+                self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(api_tools_for_call) if api_tools_for_call else 0}")
             else:
                 # Animated thinking spinner in quiet mode
                 face = random.choice(KawaiiSpinner.get_thinking_faces())
@@ -10790,7 +10894,7 @@ class AIAgent:
             
             # Log request details if verbose
             if self.verbose_logging:
-                logging.debug(f"API Request - Model: {self.model}, Messages: {len(messages)}, Tools: {len(self.tools) if self.tools else 0}")
+                logging.debug(f"API Request - Model: {self.model}, Messages: {len(messages)}, Tools: {len(api_tools_for_call) if api_tools_for_call else 0}")
                 logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
                 logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
             
@@ -10883,7 +10987,7 @@ class AIAgent:
                             api_mode=self.api_mode,
                             api_call_count=api_call_count,
                             message_count=len(api_messages),
-                            tool_count=len(self.tools or []),
+                            tool_count=len(api_tools_for_call or []),
                             approx_input_tokens=approx_tokens,
                             request_char_count=total_chars,
                             max_tokens=self.max_tokens,
@@ -12780,25 +12884,26 @@ class AIAgent:
                     if self.verbose_logging:
                         for tc in assistant_message.tool_calls:
                             logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
-                    
+
                     # Validate tool call names - detect model hallucinations
                     # Repair mismatched tool names before validating
+                    active_valid_tool_names = self._valid_tool_names_for_current_api_call()
                     for tc in assistant_message.tool_calls:
-                        if tc.function.name not in self.valid_tool_names:
+                        if tc.function.name not in active_valid_tool_names:
                             repaired = self._repair_tool_call(tc.function.name)
                             if repaired:
                                 print(f"{self.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                                 tc.function.name = repaired
                     invalid_tool_calls = [
                         tc.function.name for tc in assistant_message.tool_calls
-                        if tc.function.name not in self.valid_tool_names
+                        if tc.function.name not in active_valid_tool_names
                     ]
                     if invalid_tool_calls:
                         # Track retries for invalid tool calls
                         self._invalid_tool_retries += 1
 
                         # Return helpful error to model — model can self-correct next turn
-                        available = ", ".join(sorted(self.valid_tool_names))
+                        available = ", ".join(sorted(active_valid_tool_names))
                         invalid_name = invalid_tool_calls[0]
                         invalid_preview = invalid_name[:80] + "..." if len(invalid_name) > 80 else invalid_name
                         self._vprint(f"{self.log_prefix}⚠️  Unknown tool '{invalid_preview}' — sending error to model for self-correction ({self._invalid_tool_retries}/3)")
@@ -12819,7 +12924,7 @@ class AIAgent:
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         messages.append(assistant_msg)
                         for tc in assistant_message.tool_calls:
-                            if tc.function.name not in self.valid_tool_names:
+                            if tc.function.name not in active_valid_tool_names:
                                 content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
                             else:
                                 content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."

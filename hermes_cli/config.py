@@ -606,6 +606,22 @@ DEFAULT_CONFIG = {
         "max_line_length": 2000,
     },
 
+    # Server-side native tool prefiltering. For configured platforms, Hermes
+    # embeds the current turn, searches a profile-scoped tool schema index,
+    # and sends only the top K native tool schemas to the model. If embeddings
+    # or the index fail, the agent falls back to the full configured toolset.
+    "tool_retrieval": {
+        "enabled": True,
+        "platforms": ["acp"],
+        "top_k": 3,
+        "provider": "openai-compatible",
+        "model": "text-embedding-3-small",
+        "base_url": "",
+        "api_key_env": "OPENAI_API_KEY",
+        "cache_dir": "cache/tool_retrieval",
+        "index_filename": "index.json",
+    },
+
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
