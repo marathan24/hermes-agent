@@ -607,21 +607,21 @@ DEFAULT_CONFIG = {
     },
 
     # Server-side native tool prefiltering. For configured platforms, Hermes
-    # embeds the current turn, searches a profile-scoped tool schema index,
-    # and sends only the top K native tool schemas to the model. If embeddings
-    # or the index fail, the agent falls back to the full configured toolset
-    # unless required=true.
+    # embeds tool schemas once with a local SentenceTransformer model, stores
+    # them in a profile-scoped FAISS index, and embeds only the current query
+    # per API call. Enabled retrieval fails closed if the local model or index
+    # cannot be prepared.
     "tool_retrieval": {
         "enabled": True,
-        "required": False,
         "platforms": ["acp"],
         "top_k": 3,
-        "provider": "openai-compatible",
-        "model": "text-embedding-3-small",
-        "base_url": "",
-        "api_key_env": "OPENAI_API_KEY",
+        "model": "sentence-transformers/all-MiniLM-L6-v2",
+        "device": "cpu",
+        "normalize_embeddings": True,
+        "index_backend": "faiss",
+        "index_type": "flat_ip",
         "cache_dir": "cache/tool_retrieval",
-        "index_filename": "index.json",
+        "model_cache_dir": "cache/tool_retrieval/models",
     },
 
     "compression": {
@@ -1223,7 +1223,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 24,
 }
 
 # =============================================================================
@@ -3379,6 +3379,73 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         "  ✓ Seeded auxiliary.curator defaults in config.yaml: "
                         f"{', '.join(added_aux)}"
                     )
+
+    # ── Version 23 → 24: tool retrieval moves from OpenAI-compatible
+    # embeddings to local SentenceTransformer + FAISS artifacts.
+    if current_ver < 24:
+        config = read_raw_config()
+        raw_tool_retrieval = config.get("tool_retrieval")
+        if not isinstance(raw_tool_retrieval, dict):
+            raw_tool_retrieval = {}
+
+        defaults = DEFAULT_CONFIG.get("tool_retrieval", {})
+        changed = False
+        removed: List[str] = []
+        for legacy_key in ("provider", "base_url", "api_key_env", "index_filename", "required"):
+            if legacy_key in raw_tool_retrieval:
+                raw_tool_retrieval.pop(legacy_key, None)
+                removed.append(legacy_key)
+                changed = True
+
+        legacy_model = str(raw_tool_retrieval.get("model") or "").strip()
+        legacy_model_lower = legacy_model.lower()
+        legacy_openai_model = (
+            not legacy_model
+            or legacy_model_lower in {
+                "text-embedding-3-small",
+                "openai/text-embedding-3-small",
+            }
+            or legacy_model_lower.startswith("text-embedding-")
+            or legacy_model_lower.startswith("openai/text-embedding-")
+        )
+        if legacy_openai_model:
+            raw_tool_retrieval["model"] = defaults.get(
+                "model",
+                "sentence-transformers/all-MiniLM-L6-v2",
+            )
+            changed = True
+
+        added: List[str] = []
+        for key in (
+            "enabled",
+            "platforms",
+            "top_k",
+            "device",
+            "normalize_embeddings",
+            "index_backend",
+            "index_type",
+            "cache_dir",
+            "model_cache_dir",
+        ):
+            if key not in raw_tool_retrieval and key in defaults:
+                raw_tool_retrieval[key] = copy.deepcopy(defaults[key])
+                added.append(key)
+                changed = True
+
+        if changed:
+            config["tool_retrieval"] = raw_tool_retrieval
+            save_config(config)
+            details = []
+            if removed:
+                details.append(f"removed {', '.join(removed)}")
+            if legacy_openai_model:
+                details.append(f"model={raw_tool_retrieval['model']}")
+            if added:
+                details.append(f"added {', '.join(added)}")
+            results["config_added"].append("tool_retrieval local FAISS defaults")
+            if not quiet:
+                suffix = f": {'; '.join(details)}" if details else ""
+                print(f"  ✓ Migrated tool_retrieval to local SentenceTransformer + FAISS{suffix}")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

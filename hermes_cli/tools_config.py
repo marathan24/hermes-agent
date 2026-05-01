@@ -2501,8 +2501,9 @@ def tools_prewarm_command(args):
             tool_retrieval_cfg = {}
 
         from agent.tool_retrieval import (
-            index_file_path,
             load_or_build_index,
+            preload_embedding_model,
+            tool_schema_hash,
             tool_retrieval_enabled,
         )
         if not tool_retrieval_enabled(config, platform):
@@ -2524,22 +2525,41 @@ def tools_prewarm_command(args):
             ):
                 tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
                 index = load_or_build_index(tools, tool_retrieval_cfg, platform=platform)
+                preload_embedding_model(tool_retrieval_cfg)
         else:
             tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
             index = load_or_build_index(tools, tool_retrieval_cfg, platform=platform)
+            preload_embedding_model(tool_retrieval_cfg)
 
         if not tools:
             raise RuntimeError("no tool schemas available to prewarm")
 
-        metadata = index.get("metadata") if isinstance(index, dict) else {}
+        metadata = getattr(index, "metadata", None)
+        if metadata is None and isinstance(index, dict):
+            metadata = index.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        vector_dimensions = getattr(index, "vector_dimensions", None)
+        if vector_dimensions is None:
+            vector_dimensions = metadata.get("vector_dimensions")
+        index_path = getattr(index, "index_path", None)
+        if index_path is None and isinstance(index, dict):
+            index_path = index.get("index_path")
+        metadata_path = getattr(index, "metadata_path", None)
+        if metadata_path is None and isinstance(index, dict):
+            metadata_path = index.get("metadata_path")
         emit(
             {
                 "success": True,
                 "platform": platform,
                 "toolsets": toolsets,
                 "tool_count": len(tools),
-                "index_path": str(index_file_path(tool_retrieval_cfg)),
-                "metadata": metadata if isinstance(metadata, dict) else {},
+                "index_path": str(index_path or metadata.get("index_path") or ""),
+                "metadata_path": str(metadata_path or metadata.get("metadata_path") or ""),
+                "vector_dimensions": vector_dimensions,
+                "model": metadata.get("model") or metadata.get("embedding_model") or tool_retrieval_cfg.get("model"),
+                "schema_hash": metadata.get("schema_hash") or tool_schema_hash(tools),
+                "metadata": metadata,
             }
         )
     except Exception as exc:

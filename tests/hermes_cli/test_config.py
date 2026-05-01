@@ -631,6 +631,87 @@ class TestInterimAssistantMessageConfig:
         assert raw["display"]["interim_assistant_messages"] is True
 
 
+class TestToolRetrievalConfigMigration:
+    def test_default_config_uses_local_faiss_embeddings(self):
+        cfg = DEFAULT_CONFIG["tool_retrieval"]
+
+        assert DEFAULT_CONFIG["_config_version"] == 24
+        assert cfg["model"] == "sentence-transformers/all-MiniLM-L6-v2"
+        assert cfg["device"] == "cpu"
+        assert cfg["normalize_embeddings"] is True
+        assert cfg["index_backend"] == "faiss"
+        assert cfg["index_type"] == "flat_ip"
+        assert cfg["model_cache_dir"] == "cache/tool_retrieval/models"
+        for legacy_key in ("provider", "base_url", "api_key_env", "index_filename", "required"):
+            assert legacy_key not in cfg
+
+    def test_migrate_to_v24_removes_openai_embedding_config(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 23,
+                    "tool_retrieval": {
+                        "enabled": True,
+                        "platforms": ["acp"],
+                        "top_k": 5,
+                        "provider": "openai-compatible",
+                        "model": "openai/text-embedding-3-small",
+                        "base_url": "https://openrouter.ai/api/v1",
+                        "api_key_env": "OPENROUTER_API_KEY",
+                        "cache_dir": "cache/tool_retrieval",
+                        "index_filename": "index.json",
+                        "required": False,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        cfg = raw["tool_retrieval"]
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert cfg["model"] == "sentence-transformers/all-MiniLM-L6-v2"
+        assert cfg["top_k"] == 5
+        assert cfg["device"] == "cpu"
+        assert cfg["index_backend"] == "faiss"
+        assert cfg["index_type"] == "flat_ip"
+        assert cfg["model_cache_dir"] == "cache/tool_retrieval/models"
+        for legacy_key in ("provider", "base_url", "api_key_env", "index_filename", "required"):
+            assert legacy_key not in cfg
+
+    def test_migrate_to_v24_preserves_local_model_id(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 23,
+                    "tool_retrieval": {
+                        "enabled": True,
+                        "platforms": ["acp"],
+                        "model": "BAAI/bge-small-en-v1.5",
+                        "provider": "openai-compatible",
+                        "api_key_env": "OPENAI_API_KEY",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        cfg = raw["tool_retrieval"]
+        assert cfg["model"] == "BAAI/bge-small-en-v1.5"
+        assert cfg["device"] == "cpu"
+        assert "provider" not in cfg
+        assert "api_key_env" not in cfg
+
+
 class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}

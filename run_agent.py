@@ -165,7 +165,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, is_truthy_value, normalize_proxy_url
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
 from hermes_cli.config import cfg_get
 
 
@@ -4776,7 +4776,7 @@ class AIAgent:
         return self._interrupt_requested
 
     def _configure_tool_retrieval(self, config: dict | None) -> None:
-        """Initialize per-call tool prefiltering state."""
+        """Initialize startup-prepared tool prefiltering state."""
         self._all_tools = list(self.tools or [])
         self._all_valid_tool_names = {
             tool.get("function", {}).get("name")
@@ -4787,19 +4787,31 @@ class AIAgent:
         self._current_valid_tool_names = set(self._all_valid_tool_names)
         cfg = (config or {}).get("tool_retrieval") or {}
         self._tool_retrieval_config = cfg if isinstance(cfg, dict) else {}
-        self._tool_retrieval_required = is_truthy_value(
-            self._tool_retrieval_config.get("required", False),
-            default=False,
-        )
         self._tool_retrieval_last_fallback_reason = None
+        self._tool_retrieval_index = None
         try:
-            from agent.tool_retrieval import tool_retrieval_enabled
+            from agent.tool_retrieval import (
+                load_or_build_index,
+                preload_embedding_model,
+                tool_retrieval_enabled,
+            )
             self._tool_retrieval_enabled = tool_retrieval_enabled(
                 config or {},
                 self.platform,
             )
-        except Exception:
-            self._tool_retrieval_enabled = False
+            if not self._tool_retrieval_enabled:
+                return
+            if not self._all_tools:
+                raise RuntimeError("tool retrieval is enabled but no tool schemas are available")
+            self._tool_retrieval_index = load_or_build_index(
+                self._all_tools,
+                self._tool_retrieval_config,
+                platform=self.platform,
+            )
+            preload_embedding_model(self._tool_retrieval_config)
+        except Exception as exc:
+            self._tool_retrieval_enabled = True
+            raise RuntimeError(f"tool retrieval initialization failed: {exc}") from exc
 
     def _tools_for_api(self) -> list:
         tools = getattr(self, "_current_api_tools", None)
@@ -4816,8 +4828,8 @@ class AIAgent:
         return set(self.valid_tool_names or set())
 
     def _reset_api_tools_to_full_catalog(self, reason: str | None = None) -> None:
-        if reason and getattr(self, "_tool_retrieval_required", False):
-            raise RuntimeError(f"Tool retrieval is required but unavailable: {reason}")
+        if reason and getattr(self, "_tool_retrieval_enabled", False):
+            raise RuntimeError(f"tool retrieval is enabled but unavailable: {reason}")
         self._current_api_tools = list(getattr(self, "_all_tools", None) or self.tools or [])
         self._current_valid_tool_names = set(
             getattr(self, "_all_valid_tool_names", None) or self.valid_tool_names or set()
@@ -4825,7 +4837,7 @@ class AIAgent:
         if reason:
             last_reason = getattr(self, "_tool_retrieval_last_fallback_reason", None)
             if reason != last_reason:
-                logger.info("Tool retrieval fallback for %s: %s", self.platform or "unknown", reason)
+                logger.info("Tool retrieval reset for %s: %s", self.platform or "unknown", reason)
                 self._tool_retrieval_last_fallback_reason = reason
 
     def _prepare_tool_prefilter_for_api_call(self, user_message, messages: list) -> None:
@@ -4836,8 +4848,10 @@ class AIAgent:
 
         all_tools = list(getattr(self, "_all_tools", None) or self.tools or [])
         if not all_tools:
-            self._reset_api_tools_to_full_catalog("no tools available")
-            return
+            raise RuntimeError("tool retrieval is enabled but no tool schemas are available")
+        prepared_index = getattr(self, "_tool_retrieval_index", None)
+        if prepared_index is None:
+            raise RuntimeError("tool retrieval index was not prepared at startup")
 
         try:
             from agent.tool_retrieval import build_tool_retrieval_query, select_tools_for_query
@@ -4848,15 +4862,14 @@ class AIAgent:
                 query,
                 getattr(self, "_tool_retrieval_config", {}) or {},
                 platform=self.platform,
+                prepared_index=prepared_index,
             )
             if getattr(result, "fallback_reason", None):
-                self._reset_api_tools_to_full_catalog(result.fallback_reason)
-                return
+                raise RuntimeError(result.fallback_reason)
             selected_names = list(getattr(result, "selected_names", None) or [])
             selected_tools = get_tool_definitions_for_names(all_tools, selected_names)
             if not selected_tools:
-                self._reset_api_tools_to_full_catalog("retrieval returned no usable schemas")
-                return
+                raise RuntimeError("retrieval returned no usable schemas")
             self._current_api_tools = selected_tools
             self._current_valid_tool_names = {
                 tool.get("function", {}).get("name")
@@ -4872,7 +4885,7 @@ class AIAgent:
                     query[:200],
                 )
         except Exception as exc:
-            self._reset_api_tools_to_full_catalog(str(exc))
+            raise RuntimeError(f"tool retrieval failed: {exc}") from exc
 
 
 
