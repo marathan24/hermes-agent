@@ -92,6 +92,30 @@ def test_main_applies_preloaded_skills_to_system_prompt(monkeypatch):
     assert cli_obj.preloaded_skills == ["hermes-agent-dev", "github-auth"]
 
 
+def test_main_passes_no_tool_retrieval_to_cli(monkeypatch):
+    import cli as cli_mod
+
+    created = {}
+    monkeypatch.delenv("HERMES_NO_TOOL_RETRIEVAL", raising=False)
+
+    def fake_cli(**kwargs):
+        created["cli"] = _DummyCLI(**kwargs)
+        return created["cli"]
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", fake_cli)
+
+    env_value = None
+    try:
+        with pytest.raises(SystemExit):
+            cli_mod.main(no_tool_retrieval=True, list_toolsets=True)
+        env_value = os.environ.get("HERMES_NO_TOOL_RETRIEVAL")
+    finally:
+        os.environ.pop("HERMES_NO_TOOL_RETRIEVAL", None)
+
+    assert created["cli"].kwargs["no_tool_retrieval"] is True
+    assert env_value == "1"
+
+
 def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     import cli as cli_mod
 

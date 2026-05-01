@@ -135,6 +135,16 @@ def build_top_level_parser():
         default=None,
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.",
     )
+    _inherited_flag(
+        parser,
+        "--no-tool-retrieval",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable local embedding-backed tool prefiltering for this invocation; "
+            "send the full configured tool catalog to the model."
+        ),
+    )
     parser.add_argument(
         "--resume",
         "-r",
@@ -245,6 +255,16 @@ def build_top_level_parser():
     )
     chat_parser.add_argument(
         "-t", "--toolsets", help="Comma-separated toolsets to enable"
+    )
+    _inherited_flag(
+        chat_parser,
+        "--no-tool-retrieval",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "Disable local embedding-backed tool prefiltering for this chat; "
+            "send the full configured tool catalog to the model."
+        ),
     )
     _inherited_flag(
         chat_parser,

@@ -1856,6 +1856,7 @@ class HermesCLI:
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        no_tool_retrieval: bool = False,
     ):
         """
         Initialize the Hermes CLI.
@@ -1871,6 +1872,7 @@ class HermesCLI:
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
             pass_session_id: Include the session ID in the agent's system prompt
+            no_tool_retrieval: Disable embedding-backed tool prefiltering for this CLI session
         """
         # Initialize Rich console
         self.console = Console()
@@ -2021,6 +2023,9 @@ class HermesCLI:
         # pass skip_context_files=True and skip_memory=True to AIAgent so
         # AGENTS.md/SOUL.md/.cursorrules and persistent memory are not loaded.
         self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
+        self.no_tool_retrieval = (
+            no_tool_retrieval or os.environ.get("HERMES_NO_TOOL_RETRIEVAL") == "1"
+        )
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -3474,6 +3479,7 @@ class HermesCLI:
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
+                disable_tool_retrieval=self.no_tool_retrieval,
                 skip_context_files=self.ignore_rules,
                 skip_memory=self.ignore_rules,
                 tool_progress_callback=self._on_tool_progress,
@@ -6539,6 +6545,7 @@ class HermesCLI:
                     provider_require_parameters=self._provider_require_params,
                     provider_data_collection=self._provider_data_collection,
                     fallback_model=self._fallback_model,
+                    disable_tool_retrieval=self.no_tool_retrieval,
                 )
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
@@ -11383,6 +11390,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    no_tool_retrieval: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -11405,6 +11413,7 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
+        no_tool_retrieval: Disable embedding-backed tool prefiltering and send the full tool catalog
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -11422,6 +11431,8 @@ def main(
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
     os.environ["HERMES_INTERACTIVE"] = "1"
+    if no_tool_retrieval:
+        os.environ["HERMES_NO_TOOL_RETRIEVAL"] = "1"
     
     # Handle gateway mode (messaging + cron)
     if gateway:
@@ -11493,6 +11504,7 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        no_tool_retrieval=no_tool_retrieval,
     )
 
     if parsed_skills:

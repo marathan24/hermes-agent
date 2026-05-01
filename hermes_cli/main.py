@@ -1130,6 +1130,7 @@ def _launch_tui(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    no_tool_retrieval: bool = False,
 ):
     """Replace current process with the TUI."""
     tui_dir = PROJECT_ROOT / "ui-tui"
@@ -1157,6 +1158,8 @@ def _launch_tui(
     tui_toolsets = _normalize_tui_toolsets(toolsets)
     if tui_toolsets:
         env["HERMES_TUI_TOOLSETS"] = ",".join(tui_toolsets)
+    if no_tool_retrieval:
+        env["HERMES_NO_TOOL_RETRIEVAL"] = "1"
     # Guarantee an 8GB V8 heap + exposed GC for the TUI. Default node cap is
     # ~1.5–4GB depending on version and can fatal-OOM on long sessions with
     # large transcripts / reasoning blobs. Token-level merge: respect any
@@ -1193,6 +1196,7 @@ def _launch_tui(
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
+    no_tool_retrieval = bool(getattr(args, "no_tool_retrieval", False))
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
@@ -1294,18 +1298,26 @@ def cmd_chat(args):
     if getattr(args, "ignore_rules", False):
         os.environ["HERMES_IGNORE_RULES"] = "1"
 
+    # --no-tool-retrieval: bypass embedding-backed tool prefiltering for this
+    # invocation so the agent sends the full configured tool catalog.
+    if no_tool_retrieval:
+        os.environ["HERMES_NO_TOOL_RETRIEVAL"] = "1"
+
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
     if use_tui:
-        _launch_tui(
-            getattr(args, "resume", None),
-            tui_dev=getattr(args, "tui_dev", False),
-            model=getattr(args, "model", None),
-            provider=getattr(args, "provider", None),
-            toolsets=getattr(args, "toolsets", None),
-        )
+        launch_kwargs = {
+            "resume_session_id": getattr(args, "resume", None),
+            "tui_dev": getattr(args, "tui_dev", False),
+            "model": getattr(args, "model", None),
+            "provider": getattr(args, "provider", None),
+            "toolsets": getattr(args, "toolsets", None),
+        }
+        if no_tool_retrieval:
+            launch_kwargs["no_tool_retrieval"] = True
+        _launch_tui(**launch_kwargs)
 
     # Import and run the CLI
     from cli import main as cli_main
@@ -1328,6 +1340,8 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False),
     }
+    if no_tool_retrieval:
+        kwargs["no_tool_retrieval"] = True
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
@@ -10250,12 +10264,14 @@ Examples:
     if getattr(args, "oneshot", None):
         from hermes_cli.oneshot import run_oneshot
 
-        sys.exit(run_oneshot(
-            args.oneshot,
-            model=getattr(args, "model", None),
-            provider=getattr(args, "provider", None),
-            toolsets=getattr(args, "toolsets", None),
-        ))
+        oneshot_kwargs = {
+            "model": getattr(args, "model", None),
+            "provider": getattr(args, "provider", None),
+            "toolsets": getattr(args, "toolsets", None),
+        }
+        if getattr(args, "no_tool_retrieval", False):
+            oneshot_kwargs["no_tool_retrieval"] = True
+        sys.exit(run_oneshot(args.oneshot, **oneshot_kwargs))
 
     # Handle top-level --resume / --continue as shortcut to chat
     if (args.resume or args.continue_last) and args.command is None:

@@ -126,6 +126,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    no_tool_retrieval: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -137,6 +138,7 @@ def run_oneshot(
             HERMES_INFERENCE_PROVIDER env var, then config.yaml's model.provider,
             then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        no_tool_retrieval: Disable embedding-backed tool prefiltering for this run.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -170,6 +172,8 @@ def run_oneshot(
     # definition — a prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
+    if no_tool_retrieval:
+        os.environ["HERMES_NO_TOOL_RETRIEVAL"] = "1"
 
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.
@@ -184,6 +188,7 @@ def run_oneshot(
                 provider=provider,
                 toolsets=explicit_toolsets,
                 use_config_toolsets=use_config_toolsets,
+                no_tool_retrieval=no_tool_retrieval,
             )
     finally:
         try:
@@ -205,6 +210,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    no_tool_retrieval: bool = False,
 ) -> str:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns the final response string."""
@@ -294,6 +300,7 @@ def _run_agent(
         quiet_mode=True,
         platform="cli",
         credential_pool=runtime.get("credential_pool"),
+        disable_tool_retrieval=no_tool_retrieval,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

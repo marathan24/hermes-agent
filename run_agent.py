@@ -948,6 +948,7 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        disable_tool_retrieval: bool = False,
     ):
         """
         Initialize the AI Agent.
@@ -993,6 +994,8 @@ class AIAgent:
             load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
                 identity even when skip_context_files=True. Project context files from the cwd
                 remain skipped.
+            disable_tool_retrieval (bool): If True, skip embedding-backed tool prefiltering
+                and send the full configured tool catalog to the model.
         """
         _install_safe_stdio()
 
@@ -1007,6 +1010,10 @@ class AIAgent:
         self.quiet_mode = quiet_mode
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+        self.disable_tool_retrieval = (
+            bool(disable_tool_retrieval)
+            or os.environ.get("HERMES_NO_TOOL_RETRIEVAL") == "1"
+        )
         self._user_id = user_id  # Platform user identifier (gateway sessions)
         self._user_name = user_name
         self._chat_id = chat_id
@@ -3568,6 +3575,7 @@ class AIAgent:
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
                         enabled_toolsets=["memory", "skills"],
+                        disable_tool_retrieval=getattr(self, "disable_tool_retrieval", False),
                     )
                     review_agent._memory_write_origin = "background_review"
                     review_agent._memory_write_context = "background_review"
@@ -4789,6 +4797,9 @@ class AIAgent:
         self._tool_retrieval_config = cfg if isinstance(cfg, dict) else {}
         self._tool_retrieval_last_fallback_reason = None
         self._tool_retrieval_index = None
+        if getattr(self, "disable_tool_retrieval", False):
+            self._tool_retrieval_enabled = False
+            return
         try:
             from agent.tool_retrieval import (
                 load_or_build_index,

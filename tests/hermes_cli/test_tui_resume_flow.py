@@ -1,4 +1,5 @@
 from argparse import Namespace
+import os
 from pathlib import Path
 import sys
 import types
@@ -9,10 +10,23 @@ import pytest
 def _args(**overrides):
     base = {
         "continue_last": None,
+        "query": None,
         "model": None,
         "provider": None,
         "resume": None,
         "toolsets": None,
+        "skills": None,
+        "verbose": False,
+        "quiet": False,
+        "image": None,
+        "worktree": False,
+        "checkpoints": False,
+        "pass_session_id": False,
+        "max_turns": None,
+        "ignore_rules": False,
+        "ignore_user_config": False,
+        "source": None,
+        "no_tool_retrieval": False,
         "tui": True,
         "tui_dev": False,
     }
@@ -142,6 +156,52 @@ def test_cmd_chat_tui_passes_toolsets(monkeypatch, main_mod):
     assert captured["toolsets"] == "web,terminal"
 
 
+def test_cmd_chat_tui_passes_no_tool_retrieval(monkeypatch, main_mod):
+    captured = {}
+    monkeypatch.delenv("HERMES_NO_TOOL_RETRIEVAL", raising=False)
+
+    def fake_launch(
+        resume_session_id=None,
+        tui_dev=False,
+        model=None,
+        provider=None,
+        toolsets=None,
+        no_tool_retrieval=False,
+    ):
+        captured["no_tool_retrieval"] = no_tool_retrieval
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+
+    try:
+        with pytest.raises(SystemExit):
+            main_mod.cmd_chat(_args(no_tool_retrieval=True))
+
+        assert captured["no_tool_retrieval"] is True
+        assert os.environ["HERMES_NO_TOOL_RETRIEVAL"] == "1"
+    finally:
+        os.environ.pop("HERMES_NO_TOOL_RETRIEVAL", None)
+
+
+def test_cmd_chat_cli_passes_no_tool_retrieval(monkeypatch, main_mod):
+    captured = {}
+    monkeypatch.delenv("HERMES_NO_TOOL_RETRIEVAL", raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "cli",
+        types.SimpleNamespace(main=lambda **kwargs: captured.update(kwargs)),
+    )
+
+    try:
+        main_mod.cmd_chat(_args(tui=False, query="hello", no_tool_retrieval=True))
+
+        assert captured["query"] == "hello"
+        assert captured["no_tool_retrieval"] is True
+        assert os.environ["HERMES_NO_TOOL_RETRIEVAL"] == "1"
+    finally:
+        os.environ.pop("HERMES_NO_TOOL_RETRIEVAL", None)
+
+
 def test_main_top_level_tui_accepts_toolsets(monkeypatch, main_mod):
     captured = {}
 
@@ -190,6 +250,40 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
 
     assert exc.value.code == 0
     assert captured == {"prompt": "hello", "model": None, "provider": None, "toolsets": "web,terminal"}
+
+
+def test_main_top_level_oneshot_accepts_no_tool_retrieval(monkeypatch, main_mod):
+    captured = {}
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(sys, "argv", ["hermes", "--no-tool-retrieval", "-z", "hello"])
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(discover_plugins=lambda: None))
+    monkeypatch.setitem(sys.modules, "tools.mcp_tool", types.SimpleNamespace(discover_mcp_tools=lambda: None))
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(register_from_config=lambda _cfg, accept_hooks=False: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(run_oneshot=lambda prompt, **kwargs: captured.update({"prompt": prompt, **kwargs}) or 0),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+
+    assert exc.value.code == 0
+    assert captured == {
+        "prompt": "hello",
+        "model": None,
+        "provider": None,
+        "toolsets": None,
+        "no_tool_retrieval": True,
+    }
 
 
 def _stub_plugin_discovery(monkeypatch):
@@ -308,9 +402,10 @@ def test_oneshot_distinguishes_disabled_mcp_from_unknown(monkeypatch, capsys):
     assert "mcp-off" in err
 
 
-def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
+def test_launch_tui_exports_model_provider_toolsets_and_no_tool_retrieval(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None
+    monkeypatch.delenv("HERMES_NO_TOOL_RETRIEVAL", raising=False)
 
     monkeypatch.setattr(
         main_mod,
@@ -328,7 +423,12 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
 
     with pytest.raises(SystemExit):
-        main_mod._launch_tui(model="nous/hermes-test", provider="nous", toolsets="web, terminal")
+        main_mod._launch_tui(
+            model="nous/hermes-test",
+            provider="nous",
+            toolsets="web, terminal",
+            no_tool_retrieval=True,
+        )
 
     env = captured["env"]
     assert env["HERMES_MODEL"] == "nous/hermes-test"
@@ -336,6 +436,7 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert env["HERMES_TUI_PROVIDER"] == "nous"
     assert env["HERMES_INFERENCE_PROVIDER"] == "nous"
     assert env["HERMES_TUI_TOOLSETS"] == "web,terminal"
+    assert env["HERMES_NO_TOOL_RETRIEVAL"] == "1"
     active_path = Path(env["HERMES_TUI_ACTIVE_SESSION_FILE"])
     assert active_path.name.startswith("hermes-tui-active-session-")
     assert active_path.suffix == ".json"

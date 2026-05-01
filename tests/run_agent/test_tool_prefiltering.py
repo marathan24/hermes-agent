@@ -101,6 +101,48 @@ def test_non_acp_prefilter_uses_full_catalog(monkeypatch):
     assert agent._valid_tool_names_for_current_api_call() == {"read_file", "terminal", "patch"}
 
 
+def test_disable_tool_retrieval_uses_full_catalog_without_embedding_index(monkeypatch):
+    import agent.tool_retrieval as tool_retrieval
+
+    def fail_load_or_build_index(*_args, **_kwargs):
+        raise AssertionError("tool retrieval index should not be built")
+
+    def fail_preload_embedding_model(*_args, **_kwargs):
+        raise AssertionError("embedding model should not be preloaded")
+
+    monkeypatch.setattr(tool_retrieval, "load_or_build_index", fail_load_or_build_index)
+    monkeypatch.setattr(tool_retrieval, "preload_embedding_model", fail_preload_embedding_model)
+    agent = run_agent.AIAgent.__new__(run_agent.AIAgent)
+    agent.platform = "cli"
+    agent.disable_tool_retrieval = True
+    agent.tools = [_tool("read_file"), _tool("terminal"), _tool("patch")]
+    agent.valid_tool_names = {"read_file", "terminal", "patch"}
+    agent.verbose_logging = False
+
+    agent._configure_tool_retrieval(
+        {
+            "tool_retrieval": {
+                "enabled": True,
+                "platforms": ["cli"],
+                "top_k": 3,
+            }
+        }
+    )
+    agent._prepare_tool_prefilter_for_api_call(
+        "fix test",
+        [{"role": "user", "content": "fix test"}],
+    )
+
+    assert agent._tool_retrieval_enabled is False
+    assert agent._tool_retrieval_index is None
+    assert [tool["function"]["name"] for tool in agent._tools_for_api()] == [
+        "read_file",
+        "terminal",
+        "patch",
+    ]
+    assert agent._valid_tool_names_for_current_api_call() == {"read_file", "terminal", "patch"}
+
+
 def test_cli_prefilter_selects_tools_when_platform_enabled(monkeypatch):
     agent = _bare_agent(monkeypatch, "cli")
     agent._configure_tool_retrieval(
