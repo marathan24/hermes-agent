@@ -579,7 +579,6 @@ def _build_index(
 ) -> ToolRetrievalIndex:
     cfg = config or {}
     _validate_index_config(cfg)
-    faiss = _import_faiss()
 
     tool_texts: list[str] = []
     entries: list[dict[str, str]] = []
@@ -609,6 +608,7 @@ def _build_index(
     if vector_dimensions <= 0:
         raise ToolRetrievalError("empty embedding vector")
 
+    faiss = _import_faiss()
     try:
         index = faiss.IndexFlatIP(vector_dimensions)
         index.add(matrix)
@@ -645,7 +645,13 @@ def load_or_build_index(
         raise ToolRetrievalError("no tools available")
     cfg = config or {}
     _validate_index_config(cfg)
-    embedder = embedder or embed_texts_local
+    if embedder is None:
+        # On macOS, importing faiss before torch can initialize a second OpenMP
+        # runtime and crash later during SentenceTransformer encoding. Preload
+        # the local model first so torch owns the process OpenMP runtime before
+        # cached FAISS indexes are read or new indexes are built.
+        preload_embedding_model(cfg)
+        embedder = embed_texts_local
     expected_metadata = _index_metadata(tools, cfg, platform)
     paths = index_artifact_paths(cfg, expected_metadata["schema_hash"], platform)
 
