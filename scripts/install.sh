@@ -959,6 +959,13 @@ install_deps() {
         export VIRTUAL_ENV="$INSTALL_DIR/venv"
     fi
 
+    if [ -z "${UV_TORCH_BACKEND:-}" ]; then
+        # Local tool retrieval uses SentenceTransformer on CPU by default. Keep
+        # fresh Linux installs from pulling CUDA/NVIDIA PyTorch wheels unless
+        # the caller explicitly opts into a different torch backend.
+        export UV_TORCH_BACKEND=cpu
+    fi
+
     # On Debian/Ubuntu (including WSL), some Python packages need build tools.
     # Check and offer to install them if missing.
     if [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
