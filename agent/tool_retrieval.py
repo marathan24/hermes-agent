@@ -188,7 +188,7 @@ def _normalize_embeddings(config: dict) -> bool:
 
 def _top_k(config: dict) -> int:
     try:
-        top_k = int((config or {}).get("top_k", 3))
+        top_k = int((config or {}).get("top_k", 5))
     except (TypeError, ValueError):
         raise ToolRetrievalError("top_k must be an integer") from None
     if top_k <= 0:

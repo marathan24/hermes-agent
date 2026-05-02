@@ -614,7 +614,7 @@ DEFAULT_CONFIG = {
     "tool_retrieval": {
         "enabled": True,
         "platforms": ["acp", "cli"],
-        "top_k": 3,
+        "top_k": 5,
         "model": "sentence-transformers/all-MiniLM-L6-v2",
         "device": "cpu",
         "normalize_embeddings": True,
