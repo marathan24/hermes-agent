@@ -932,7 +932,10 @@ class TestBuildSystemPrompt:
         prompt = retrieval_agent._build_system_prompt()
 
         assert TOOL_RETRIEVAL_GUIDANCE in prompt
-        assert [tool["function"]["name"] for tool in retrieval_agent._tools_for_api()] == ["retrieve_tools"]
+        assert [tool["function"]["name"] for tool in retrieval_agent._tools_for_api()] == [
+            "retrieve_tools",
+            "call_retrieved_tool",
+        ]
 
     def test_tool_retrieval_guidance_absent_when_retrieval_disabled(self):
         from agent.prompt_builder import TOOL_RETRIEVAL_GUIDANCE
