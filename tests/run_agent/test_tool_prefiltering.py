@@ -109,7 +109,7 @@ def test_retrieve_tools_selects_current_api_tools_from_model_query(monkeypatch):
     assert agent.valid_tool_names == {"read_file", "terminal", "patch"}
 
 
-def test_retrieve_tools_accumulates_visible_tools_within_user_turn(monkeypatch):
+def test_retrieve_tools_replaces_visible_tools_within_user_turn(monkeypatch):
     agent = _bare_agent(monkeypatch, "acp")
 
     def fake_select(tools, query, config, platform=None, prepared_index=None):
@@ -134,20 +134,18 @@ def test_retrieve_tools_accumulates_visible_tools_within_user_turn(monkeypatch):
     second = json.loads(agent._retrieve_tools("edit files"))
 
     assert first["exposed_tools"] == ["terminal"]
-    assert second["exposed_tools"] == ["terminal", "patch"]
+    assert second["exposed_tools"] == ["patch"]
     assert [tool["function"]["name"] for tool in agent._tools_for_api()] == [
         "retrieve_tools",
-        "terminal",
         "patch",
     ]
     assert agent._valid_tool_names_for_current_api_call() == {
         "retrieve_tools",
-        "terminal",
         "patch",
     }
 
 
-def test_retrieve_tools_caps_accumulated_visible_tools(monkeypatch):
+def test_retrieve_tools_caps_current_visible_tools(monkeypatch):
     agent = _bare_agent(
         monkeypatch,
         "acp",
@@ -162,31 +160,24 @@ def test_retrieve_tools_caps_accumulated_visible_tools(monkeypatch):
     )
 
     def fake_select(tools, query, config, platform=None, prepared_index=None):
-        if query == "read and run":
+        if query == "read run and edit":
             return ToolRetrievalResult(
-                selected_tools=[tools[0], tools[1]],
-                selected_names=["read_file", "terminal"],
-                scores={"read_file": 0.9, "terminal": 0.8},
-            )
-        if query == "edit files":
-            return ToolRetrievalResult(
-                selected_tools=[tools[2]],
-                selected_names=["patch"],
-                scores={"patch": 0.7},
+                selected_tools=[tools[0], tools[1], tools[2]],
+                selected_names=["read_file", "terminal", "patch"],
+                scores={"read_file": 0.9, "terminal": 0.8, "patch": 0.7},
             )
         raise AssertionError(query)
 
     agent._tool_retrieval_select_fn = fake_select
     agent._prepare_tool_prefilter_for_api_call("fix test", [{"role": "user", "content": "fix test"}])
 
-    json.loads(agent._retrieve_tools("read and run"))
-    payload = json.loads(agent._retrieve_tools("edit files"))
+    payload = json.loads(agent._retrieve_tools("read run and edit"))
 
-    assert payload["exposed_tools"] == ["terminal", "patch"]
+    assert payload["exposed_tools"] == ["read_file", "terminal"]
     assert [tool["function"]["name"] for tool in agent._tools_for_api()] == [
         "retrieve_tools",
+        "read_file",
         "terminal",
-        "patch",
     ]
 
 

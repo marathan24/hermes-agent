@@ -4868,19 +4868,6 @@ class AIAgent:
         max_tools = max(1, max_tools)
         return min(max_tools, max(1, int(total_native_tools or 1)))
 
-    def _current_retrieved_native_tool_names(self) -> list[str]:
-        names: list[str] = []
-        seen: set[str] = set()
-        for tool in getattr(self, "_current_api_tools", None) or []:
-            if not isinstance(tool, dict):
-                continue
-            name = str((tool.get("function") or {}).get("name") or "")
-            if not name or name == "retrieve_tools" or name in seen:
-                continue
-            names.append(name)
-            seen.add(name)
-        return names
-
     def _tools_for_api(self) -> list:
         if not getattr(self, "_tool_retrieval_enabled", False):
             return self.tools or []
@@ -5009,24 +4996,19 @@ class AIAgent:
                 raise RuntimeError("retrieval returned no usable schemas")
 
             all_native_names = set(getattr(self, "_all_valid_tool_names", None) or ())
-            existing_names = [
-                name
-                for name in self._current_retrieved_native_tool_names()
-                if name in all_native_names
-            ]
-            merged_names: list[str] = []
+            visible_names: list[str] = []
             seen_names: set[str] = set()
-            for name in existing_names + selected_names:
+            for name in selected_names:
                 if name not in all_native_names or name in seen_names:
                     continue
-                merged_names.append(name)
+                visible_names.append(name)
                 seen_names.add(name)
 
             max_visible_tools = self._tool_retrieval_max_visible_tools(len(all_tools))
-            if len(merged_names) > max_visible_tools:
-                merged_names = merged_names[-max_visible_tools:]
+            if len(visible_names) > max_visible_tools:
+                visible_names = visible_names[:max_visible_tools]
 
-            selected_tools = get_tool_definitions_for_names(all_tools, merged_names)
+            selected_tools = get_tool_definitions_for_names(all_tools, visible_names)
             if not selected_tools:
                 raise RuntimeError("retrieval returned no usable schemas")
 
