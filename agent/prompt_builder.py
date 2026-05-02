@@ -201,9 +201,10 @@ TOOL_RETRIEVAL_GUIDANCE = (
     "Tool retrieval is enabled. Most native tool schemas are hidden at first. "
     "When a task requires a tool, call `retrieve_tools` with a concise `query` "
     "describing the needed capability or next action. The retrieval tool will "
-    "expose matching native tools for the next assistant step; after it returns, "
-    "call one of the returned tools normally. Do not guess hidden tool names or "
-    "arguments before retrieving them."
+    "expose matching native tools for the current user turn; after it returns, "
+    "call one of the exposed tools normally. If a suitable tool is already "
+    "visible, use it directly instead of calling retrieve_tools again. Do not "
+    "guess hidden tool names or arguments before retrieving them."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.

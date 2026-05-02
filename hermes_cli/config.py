@@ -615,6 +615,9 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "platforms": ["acp", "cli"],
         "top_k": 5,
+        # Maximum native tools retained cumulatively for one user turn.
+        # retrieve_tools itself is always exposed in addition to this cap.
+        "max_visible_tools": 16,
         "model": "sentence-transformers/all-MiniLM-L6-v2",
         "device": "cpu",
         "normalize_embeddings": True,

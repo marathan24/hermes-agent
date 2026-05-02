@@ -4858,6 +4858,29 @@ class AIAgent:
         self._current_api_tools = [self._retrieve_tools_tool_definition()]
         self._current_valid_tool_names = {"retrieve_tools"}
 
+    def _tool_retrieval_max_visible_tools(self, total_native_tools: int) -> int:
+        """Maximum native tools to keep exposed during one user turn."""
+        cfg = getattr(self, "_tool_retrieval_config", {}) or {}
+        try:
+            max_tools = int(cfg.get("max_visible_tools", 16))
+        except (TypeError, ValueError):
+            max_tools = 16
+        max_tools = max(1, max_tools)
+        return min(max_tools, max(1, int(total_native_tools or 1)))
+
+    def _current_retrieved_native_tool_names(self) -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+        for tool in getattr(self, "_current_api_tools", None) or []:
+            if not isinstance(tool, dict):
+                continue
+            name = str((tool.get("function") or {}).get("name") or "")
+            if not name or name == "retrieve_tools" or name in seen:
+                continue
+            names.append(name)
+            seen.add(name)
+        return names
+
     def _tools_for_api(self) -> list:
         if not getattr(self, "_tool_retrieval_enabled", False):
             return self.tools or []
@@ -4977,8 +5000,33 @@ class AIAgent:
             )
             if getattr(result, "fallback_reason", None):
                 raise RuntimeError(result.fallback_reason)
-            selected_names = list(getattr(result, "selected_names", None) or [])
-            selected_tools = get_tool_definitions_for_names(all_tools, selected_names)
+            selected_names = [
+                str(name)
+                for name in (getattr(result, "selected_names", None) or [])
+                if str(name)
+            ]
+            if not selected_names:
+                raise RuntimeError("retrieval returned no usable schemas")
+
+            all_native_names = set(getattr(self, "_all_valid_tool_names", None) or ())
+            existing_names = [
+                name
+                for name in self._current_retrieved_native_tool_names()
+                if name in all_native_names
+            ]
+            merged_names: list[str] = []
+            seen_names: set[str] = set()
+            for name in existing_names + selected_names:
+                if name not in all_native_names or name in seen_names:
+                    continue
+                merged_names.append(name)
+                seen_names.add(name)
+
+            max_visible_tools = self._tool_retrieval_max_visible_tools(len(all_tools))
+            if len(merged_names) > max_visible_tools:
+                merged_names = merged_names[-max_visible_tools:]
+
+            selected_tools = get_tool_definitions_for_names(all_tools, merged_names)
             if not selected_tools:
                 raise RuntimeError("retrieval returned no usable schemas")
 
@@ -4993,14 +5041,14 @@ class AIAgent:
             self._tool_retrieval_last_fallback_reason = None
             scores = getattr(result, "scores", {}) or {}
             returned_tools = []
-            for tool in selected_tools:
-                function = tool.get("function", {}) if isinstance(tool, dict) else {}
-                name = str(function.get("name") or "")
-                if not name:
-                    continue
+            exposed_names = [
+                tool.get("function", {}).get("name")
+                for tool in selected_tools
+                if isinstance(tool, dict) and tool.get("function", {}).get("name")
+            ]
+            for name in exposed_names:
                 item = {
                     "name": name,
-                    "description": str(function.get("description") or ""),
                 }
                 if name in scores:
                     try:
@@ -5019,10 +5067,11 @@ class AIAgent:
                 {
                     "success": True,
                     "query": query,
+                    "exposed_tools": exposed_names,
                     "tools": returned_tools,
                     "message": (
-                        "These native tools are now exposed for the next assistant step. "
-                        "Call one of them normally, or call retrieve_tools again for a different capability."
+                        "These native tools are now exposed for this user turn. "
+                        "Call an exposed tool normally; call retrieve_tools again only for a different capability."
                     ),
                 },
                 ensure_ascii=False,
