@@ -898,6 +898,74 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
 
+    @pytest.mark.parametrize("platform", ["acp", "cli"])
+    def test_tool_retrieval_guidance_when_retrieval_enabled(self, platform):
+        from agent.prompt_builder import TOOL_RETRIEVAL_GUIDANCE
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal", "read_file")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.tool_retrieval.load_or_build_index", return_value=object()),
+            patch("agent.tool_retrieval.preload_embedding_model"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "tool_retrieval": {
+                        "enabled": True,
+                        "platforms": ["acp", "cli"],
+                        "top_k": 3,
+                    },
+                    "agent": {"tool_use_enforcement": False},
+                },
+            ),
+            patch("run_agent.OpenAI"),
+        ):
+            retrieval_agent = AIAgent(
+                api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
+                platform=platform,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        prompt = retrieval_agent._build_system_prompt()
+
+        assert TOOL_RETRIEVAL_GUIDANCE in prompt
+        assert [tool["function"]["name"] for tool in retrieval_agent._tools_for_api()] == ["retrieve_tools"]
+
+    def test_tool_retrieval_guidance_absent_when_retrieval_disabled(self):
+        from agent.prompt_builder import TOOL_RETRIEVAL_GUIDANCE
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal", "read_file")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "tool_retrieval": {
+                        "enabled": False,
+                        "platforms": ["acp", "cli"],
+                        "top_k": 3,
+                    },
+                    "agent": {"tool_use_enforcement": False},
+                },
+            ),
+            patch("run_agent.OpenAI"),
+        ):
+            retrieval_agent = AIAgent(
+                api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
+                platform="acp",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        prompt = retrieval_agent._build_system_prompt()
+
+        assert TOOL_RETRIEVAL_GUIDANCE not in prompt
+
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()
         # Should contain current date info like "Conversation started:"

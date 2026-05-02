@@ -613,7 +613,7 @@ DEFAULT_CONFIG = {
     # cannot be prepared.
     "tool_retrieval": {
         "enabled": True,
-        "platforms": ["acp"],
+        "platforms": ["acp", "cli"],
         "top_k": 3,
         "model": "sentence-transformers/all-MiniLM-L6-v2",
         "device": "cpu",
@@ -1223,7 +1223,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 24,
+    "_config_version": 25,
 }
 
 # =============================================================================
@@ -3446,6 +3446,30 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 suffix = f": {'; '.join(details)}" if details else ""
                 print(f"  ✓ Migrated tool_retrieval to local SentenceTransformer + FAISS{suffix}")
+
+    # ── Version 24 → 25: model-called tool retrieval becomes the default for
+    # the interactive CLI as well as ACP. Only migrate the old default
+    # platform list; preserve custom platform choices.
+    if current_ver < 25:
+        config = read_raw_config()
+        raw_tool_retrieval = config.get("tool_retrieval")
+        if not isinstance(raw_tool_retrieval, dict):
+            raw_tool_retrieval = {}
+
+        platforms = raw_tool_retrieval.get("platforms")
+        normalized = None
+        if isinstance(platforms, str):
+            normalized = [p.strip().lower() for p in platforms.split(",") if p.strip()]
+        elif isinstance(platforms, list):
+            normalized = [str(p).strip().lower() for p in platforms if str(p).strip()]
+
+        if normalized == ["acp"]:
+            raw_tool_retrieval["platforms"] = ["acp", "cli"]
+            config["tool_retrieval"] = raw_tool_retrieval
+            save_config(config)
+            results["config_added"].append("tool_retrieval CLI platform default")
+            if not quiet:
+                print("  ✓ Enabled tool retrieval for CLI by default")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

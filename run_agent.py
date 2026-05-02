@@ -134,6 +134,7 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
+    TOOL_RETRIEVAL_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -306,7 +307,31 @@ class IterationBudget:
 
 # Tools that must never run concurrently (interactive / user-facing).
 # When any of these appear in a batch, we fall back to sequential execution.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "retrieve_tools"})
+
+_RETRIEVE_TOOLS_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "retrieve_tools",
+        "description": (
+            "Retrieve and expose native Hermes tools for the next assistant step. "
+            "Use this before calling a tool whose schema is not currently visible."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Concise description of the needed capability or next action, "
+                        "for example 'read project files' or 'run shell commands'."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
@@ -4784,7 +4809,7 @@ class AIAgent:
         return self._interrupt_requested
 
     def _configure_tool_retrieval(self, config: dict | None) -> None:
-        """Initialize startup-prepared tool prefiltering state."""
+        """Initialize startup-prepared model-called tool retrieval state."""
         self._all_tools = list(self.tools or [])
         self._all_valid_tool_names = {
             tool.get("function", {}).get("name")
@@ -4824,13 +4849,26 @@ class AIAgent:
             self._tool_retrieval_enabled = True
             raise RuntimeError(f"tool retrieval initialization failed: {exc}") from exc
 
+        self._set_api_tools_to_retrieval_only()
+
+    def _retrieve_tools_tool_definition(self) -> dict:
+        return copy.deepcopy(_RETRIEVE_TOOLS_TOOL_DEFINITION)
+
+    def _set_api_tools_to_retrieval_only(self) -> None:
+        self._current_api_tools = [self._retrieve_tools_tool_definition()]
+        self._current_valid_tool_names = {"retrieve_tools"}
+
     def _tools_for_api(self) -> list:
+        if not getattr(self, "_tool_retrieval_enabled", False):
+            return self.tools or []
         tools = getattr(self, "_current_api_tools", None)
         if isinstance(tools, list):
             return tools
         return self.tools or []
 
     def _valid_tool_names_for_current_api_call(self) -> set:
+        if not getattr(self, "_tool_retrieval_enabled", False):
+            return set(self.valid_tool_names or set())
         names = getattr(self, "_current_valid_tool_names", None)
         if isinstance(names, set):
             return set(names)
@@ -4852,21 +4890,83 @@ class AIAgent:
                 self._tool_retrieval_last_fallback_reason = reason
 
     def _prepare_tool_prefilter_for_api_call(self, user_message, messages: list) -> None:
-        """Select the native tool schemas for the next API call."""
+        """Prepare the visible tool surface for a new user turn.
+
+        Historical name retained for tests/external callers. Tool retrieval no
+        longer embeds an automatic query before every API call; when enabled,
+        the model first sees only ``retrieve_tools`` and supplies the retrieval
+        query itself.
+        """
         if not getattr(self, "_tool_retrieval_enabled", False):
             self._reset_api_tools_to_full_catalog()
             return
 
+        self._set_api_tools_to_retrieval_only()
+
+    def _invalid_tool_call_feedback(self, tool_name: str, active_valid_tool_names: set) -> str:
+        """Return model-facing feedback for unavailable tool calls."""
+        available = ", ".join(sorted(active_valid_tool_names))
+        hidden_native_tools = set(getattr(self, "_all_valid_tool_names", set()) or set())
+        if getattr(self, "_tool_retrieval_enabled", False) and tool_name in hidden_native_tools:
+            return (
+                f"Tool '{tool_name}' is currently hidden. "
+                "Call retrieve_tools first with a concise query for the needed capability; "
+                "then call one of the returned tools normally."
+            )
+        if getattr(self, "_tool_retrieval_enabled", False):
+            return (
+                f"Tool '{tool_name}' is not currently available. "
+                f"Available tools: {available}. If you need a hidden native tool, "
+                "call retrieve_tools first."
+            )
+        return f"Tool '{tool_name}' does not exist. Available tools: {available}"
+
+    def _retrieve_tools(self, query: str) -> str:
+        """Expose native tool schemas selected by the model-provided query."""
+        if not getattr(self, "_tool_retrieval_enabled", False):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "tool retrieval is not enabled for this session",
+                },
+                ensure_ascii=False,
+            )
+
         all_tools = list(getattr(self, "_all_tools", None) or self.tools or [])
         if not all_tools:
-            raise RuntimeError("tool retrieval is enabled but no tool schemas are available")
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "tool retrieval is enabled but no tool schemas are available",
+                },
+                ensure_ascii=False,
+            )
         prepared_index = getattr(self, "_tool_retrieval_index", None)
         if prepared_index is None:
-            raise RuntimeError("tool retrieval index was not prepared at startup")
+            self._set_api_tools_to_retrieval_only()
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "tool retrieval index was not prepared at startup",
+                    "message": "No native tools were exposed.",
+                },
+                ensure_ascii=False,
+            )
+
+        query = str(query or "").strip()
+        if not query:
+            self._set_api_tools_to_retrieval_only()
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "query is required",
+                    "message": "Call retrieve_tools again with a concise capability query.",
+                },
+                ensure_ascii=False,
+            )
 
         try:
-            from agent.tool_retrieval import build_tool_retrieval_query, select_tools_for_query
-            query = build_tool_retrieval_query(user_message, messages)
+            from agent.tool_retrieval import select_tools_for_query
             select_fn = getattr(self, "_tool_retrieval_select_fn", select_tools_for_query)
             result = select_fn(
                 all_tools,
@@ -4881,22 +4981,67 @@ class AIAgent:
             selected_tools = get_tool_definitions_for_names(all_tools, selected_names)
             if not selected_tools:
                 raise RuntimeError("retrieval returned no usable schemas")
-            self._current_api_tools = selected_tools
-            self._current_valid_tool_names = {
+
+            visible_tools = [self._retrieve_tools_tool_definition()] + selected_tools
+            self._current_api_tools = visible_tools
+            native_valid_names = {
                 tool.get("function", {}).get("name")
                 for tool in selected_tools
                 if isinstance(tool, dict) and tool.get("function", {}).get("name")
             }
+            self._current_valid_tool_names = {"retrieve_tools"} | native_valid_names
             self._tool_retrieval_last_fallback_reason = None
+            scores = getattr(result, "scores", {}) or {}
+            returned_tools = []
+            for tool in selected_tools:
+                function = tool.get("function", {}) if isinstance(tool, dict) else {}
+                name = str(function.get("name") or "")
+                if not name:
+                    continue
+                item = {
+                    "name": name,
+                    "description": str(function.get("description") or ""),
+                }
+                if name in scores:
+                    try:
+                        item["score"] = float(scores[name])
+                    except (TypeError, ValueError):
+                        pass
+                returned_tools.append(item)
             if self.verbose_logging:
                 logger.debug(
                     "Tool retrieval selected %s for platform=%s query=%r",
-                    sorted(self._current_valid_tool_names),
+                    sorted(native_valid_names),
                     self.platform or "",
                     query[:200],
                 )
+            return json.dumps(
+                {
+                    "success": True,
+                    "query": query,
+                    "tools": returned_tools,
+                    "message": (
+                        "These native tools are now exposed for the next assistant step. "
+                        "Call one of them normally, or call retrieve_tools again for a different capability."
+                    ),
+                },
+                ensure_ascii=False,
+            )
         except Exception as exc:
-            raise RuntimeError(f"tool retrieval failed: {exc}") from exc
+            self._set_api_tools_to_retrieval_only()
+            logger.warning("Tool retrieval failed for platform=%s: %s", self.platform or "", exc)
+            return json.dumps(
+                {
+                    "success": False,
+                    "query": query,
+                    "error": f"tool retrieval failed: {exc}",
+                    "message": (
+                        "No native tools were exposed. Call retrieve_tools again with a different "
+                        "query if you still need a hidden tool."
+                    ),
+                },
+                ensure_ascii=False,
+            )
 
 
 
@@ -4950,6 +5095,9 @@ class AIAgent:
             tool_guidance.append(SKILLS_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
+
+        if getattr(self, "_tool_retrieval_enabled", False):
+            prompt_parts.append(TOOL_RETRIEVAL_GUIDANCE)
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
@@ -9269,6 +9417,8 @@ class AIAgent:
         if block_message is not None:
             return json.dumps({"error": block_message}, ensure_ascii=False)
 
+        if function_name == "retrieve_tools":
+            return self._retrieve_tools(function_args.get("query", ""))
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -9805,6 +9955,11 @@ class AIAgent:
                 # Tool blocked by plugin policy — return error without executing.
                 function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
                 tool_duration = 0.0
+            elif function_name == "retrieve_tools":
+                function_result = self._retrieve_tools(function_args.get("query", ""))
+                tool_duration = time.time() - tool_start_time
+                if self._should_emit_quiet_tool_messages():
+                    self._vprint(f"  {_get_cute_tool_message_impl('retrieve_tools', function_args, tool_duration, result=function_result)}")
             elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
                 function_result = _todo_tool(
@@ -10422,6 +10577,8 @@ class AIAgent:
         if not self.quiet_mode:
             _print_preview = _summarize_user_message_for_log(user_message)
             self._safe_print(f"💬 Starting conversation: '{_print_preview[:60]}{'...' if len(_print_preview) > 60 else ''}'")
+
+        self._prepare_tool_prefilter_for_api_call(original_user_message, messages)
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
@@ -10492,7 +10649,7 @@ class AIAgent:
             _preflight_tokens = estimate_request_tokens_rough(
                 messages,
                 system_prompt=active_system_prompt or "",
-                tools=self.tools or None,
+                tools=self._tools_for_api() or None,
             )
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
@@ -10538,7 +10695,7 @@ class AIAgent:
                     _preflight_tokens = estimate_request_tokens_rough(
                         messages,
                         system_prompt=active_system_prompt or "",
-                        tools=self.tools or None,
+                        tools=self._tools_for_api() or None,
                     )
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
@@ -10893,7 +11050,6 @@ class AIAgent:
             # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
             _sanitize_messages_surrogates(api_messages)
 
-            self._prepare_tool_prefilter_for_api_call(original_user_message, messages)
             api_tools_for_call = self._tools_for_api()
 
             # Calculate approximate request size for logging
@@ -12933,7 +13089,6 @@ class AIAgent:
                         self._invalid_tool_retries += 1
 
                         # Return helpful error to model — model can self-correct next turn
-                        available = ", ".join(sorted(active_valid_tool_names))
                         invalid_name = invalid_tool_calls[0]
                         invalid_preview = invalid_name[:80] + "..." if len(invalid_name) > 80 else invalid_name
                         self._vprint(f"{self.log_prefix}⚠️  Unknown tool '{invalid_preview}' — sending error to model for self-correction ({self._invalid_tool_retries}/3)")
@@ -12955,7 +13110,10 @@ class AIAgent:
                         messages.append(assistant_msg)
                         for tc in assistant_message.tool_calls:
                             if tc.function.name not in active_valid_tool_names:
-                                content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
+                                content = self._invalid_tool_call_feedback(
+                                    tc.function.name,
+                                    active_valid_tool_names,
+                                )
                             else:
                                 content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
                             messages.append({

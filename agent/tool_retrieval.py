@@ -23,6 +23,7 @@ DEFAULT_CACHE_DIR = Path("cache") / "tool_retrieval"
 DEFAULT_MODEL_CACHE_DIR = DEFAULT_CACHE_DIR / "models"
 DEFAULT_INDEX_BACKEND = "faiss"
 DEFAULT_INDEX_TYPE = "flat_ip"
+DEFAULT_RETRIEVAL_PLATFORMS = ("acp", "cli")
 
 
 class ToolRetrievalError(RuntimeError):
@@ -158,7 +159,7 @@ def tool_retrieval_enabled(config: dict, platform: str | None) -> bool:
     if not _is_truthy(cfg.get("enabled", True), default=True):
         return False
 
-    platforms = cfg.get("platforms", ["acp"])
+    platforms = cfg.get("platforms", list(DEFAULT_RETRIEVAL_PLATFORMS))
     if platforms in (None, ""):
         return True
     if isinstance(platforms, str):

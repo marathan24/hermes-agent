@@ -635,15 +635,61 @@ class TestToolRetrievalConfigMigration:
     def test_default_config_uses_local_faiss_embeddings(self):
         cfg = DEFAULT_CONFIG["tool_retrieval"]
 
-        assert DEFAULT_CONFIG["_config_version"] == 24
         assert cfg["model"] == "sentence-transformers/all-MiniLM-L6-v2"
         assert cfg["device"] == "cpu"
+        assert cfg["platforms"] == ["acp", "cli"]
         assert cfg["normalize_embeddings"] is True
         assert cfg["index_backend"] == "faiss"
         assert cfg["index_type"] == "flat_ip"
         assert cfg["model_cache_dir"] == "cache/tool_retrieval/models"
         for legacy_key in ("provider", "base_url", "api_key_env", "index_filename", "required"):
             assert legacy_key not in cfg
+
+    def test_migrate_to_v25_adds_cli_to_old_default_tool_retrieval_platforms(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 24,
+                    "tool_retrieval": {
+                        "enabled": True,
+                        "platforms": ["acp"],
+                        "top_k": 3,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["tool_retrieval"]["platforms"] == ["acp", "cli"]
+
+    def test_migrate_to_v25_preserves_custom_tool_retrieval_platforms(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 24,
+                    "tool_retrieval": {
+                        "enabled": True,
+                        "platforms": ["gateway"],
+                        "top_k": 3,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["tool_retrieval"]["platforms"] == ["gateway"]
 
     def test_migrate_to_v24_removes_openai_embedding_config(self, tmp_path):
         config_path = tmp_path / "config.yaml"

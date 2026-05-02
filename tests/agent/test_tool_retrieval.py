@@ -13,6 +13,7 @@ from agent.tool_retrieval import (
     index_file_path,
     load_or_build_index,
     select_tools_for_query,
+    tool_retrieval_enabled,
     tool_schema_hash,
     tool_schema_text,
 )
@@ -110,6 +111,12 @@ def test_tool_schema_text_includes_parameter_names_and_descriptions():
     assert "Read a file from disk." in text
     assert "parameter path required: string Absolute file path" in text
     assert "parameter limit: integer Maximum lines" in text
+
+
+def test_tool_retrieval_enabled_defaults_include_acp_and_cli():
+    assert tool_retrieval_enabled({"tool_retrieval": {"enabled": True}}, "acp") is True
+    assert tool_retrieval_enabled({"tool_retrieval": {"enabled": True}}, "cli") is True
+    assert tool_retrieval_enabled({"tool_retrieval": {"enabled": True}}, "gateway") is False
 
 
 def test_index_artifact_paths_are_profile_safe(monkeypatch, tmp_path):
