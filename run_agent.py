@@ -9727,6 +9727,30 @@ class AIAgent:
         )
         return _finish(result, tool_name, tool_args)
 
+    @staticmethod
+    def _normalize_call_retrieved_tool_args(function_args: dict) -> tuple[str, Any]:
+        """Return the retrieved tool name and native args from a wrapper call.
+
+        Some models flatten the native tool arguments into the wrapper call, e.g.
+        {"name": "terminal", "command": "pwd"}, instead of nesting them under
+        {"arguments": {"command": "pwd"}}. Preserve the documented nested shape
+        while tolerating that common flattened form.
+        """
+        if not isinstance(function_args, dict):
+            return "", {}
+
+        tool_name = function_args.get("name", "")
+        flattened_args = {
+            key: value
+            for key, value in function_args.items()
+            if key not in {"name", "arguments"}
+        }
+        if function_args.get("arguments") is None and flattened_args:
+            return tool_name, flattened_args
+        if "arguments" in function_args:
+            return tool_name, function_args.get("arguments")
+        return tool_name, flattened_args
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
@@ -9748,9 +9772,10 @@ class AIAgent:
         if function_name == "retrieve_tools":
             return self._retrieve_tools(function_args.get("query", ""))
         if function_name == "call_retrieved_tool":
+            retrieved_tool_name, retrieved_tool_args = self._normalize_call_retrieved_tool_args(function_args)
             return self._call_retrieved_tool(
-                function_args.get("name", ""),
-                function_args.get("arguments", {}),
+                retrieved_tool_name,
+                retrieved_tool_args,
                 effective_task_id,
                 tool_call_id=tool_call_id,
                 messages=messages,
@@ -10241,9 +10266,10 @@ class AIAgent:
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('retrieve_tools', function_args, tool_duration, result=function_result)}")
             elif function_name == "call_retrieved_tool":
+                retrieved_tool_name, retrieved_tool_args = self._normalize_call_retrieved_tool_args(function_args)
                 function_result, executed_function_name, executed_function_args = self._call_retrieved_tool(
-                    function_args.get("name", ""),
-                    function_args.get("arguments", {}),
+                    retrieved_tool_name,
+                    retrieved_tool_args,
                     effective_task_id,
                     tool_call_id=tool_call.id,
                     messages=messages,
