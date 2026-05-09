@@ -12,8 +12,8 @@ import run_agent
 from agent.tool_retrieval import ToolRetrievalResult
 
 _PREPARED_INDEX = object()
-_STABLE_RETRIEVAL_TOOL_NAMES = ["retrieve_tools", "call_retrieved_tool"]
-_STABLE_RETRIEVAL_VALID_NAMES = {"retrieve_tools", "call_retrieved_tool"}
+_STABLE_RETRIEVAL_TOOL_NAMES = ["retrieve_tools"]
+_STABLE_RETRIEVAL_VALID_NAMES = {"retrieve_tools"}
 
 
 def _api_tool_names(agent) -> list[str]:
@@ -107,8 +107,12 @@ def test_retrieve_tools_selects_current_api_tools_from_model_query(monkeypatch):
     assert payload["tools"][0]["score"] == 1.0
     assert payload["tools"][0]["description"] == "terminal tool"
     assert payload["tools"][0]["parameters"] == {"type": "object", "properties": {}}
-    assert _api_tool_names(agent) == _STABLE_RETRIEVAL_TOOL_NAMES
-    assert agent._valid_tool_names_for_current_api_call() == _STABLE_RETRIEVAL_VALID_NAMES
+    assert _api_tool_names(agent) == ["retrieve_tools", "terminal", "read_file"]
+    assert agent._valid_tool_names_for_current_api_call() == {
+        "retrieve_tools",
+        "terminal",
+        "read_file",
+    }
     assert agent._retrieved_tool_names == ["terminal", "read_file"]
     assert agent.valid_tool_names == {"read_file", "terminal", "patch"}
 
@@ -139,8 +143,8 @@ def test_retrieve_tools_replaces_visible_tools_within_user_turn(monkeypatch):
 
     assert first["exposed_tools"] == ["terminal"]
     assert second["exposed_tools"] == ["patch"]
-    assert _api_tool_names(agent) == _STABLE_RETRIEVAL_TOOL_NAMES
-    assert agent._valid_tool_names_for_current_api_call() == _STABLE_RETRIEVAL_VALID_NAMES
+    assert _api_tool_names(agent) == ["retrieve_tools", "patch"]
+    assert agent._valid_tool_names_for_current_api_call() == {"retrieve_tools", "patch"}
     assert agent._retrieved_tool_names == ["patch"]
 
 
@@ -174,7 +178,12 @@ def test_retrieve_tools_caps_current_visible_tools(monkeypatch):
 
     assert payload["exposed_tools"] == ["read_file", "terminal"]
     assert [tool["name"] for tool in payload["tools"]] == ["read_file", "terminal"]
-    assert _api_tool_names(agent) == _STABLE_RETRIEVAL_TOOL_NAMES
+    assert _api_tool_names(agent) == ["retrieve_tools", "read_file", "terminal"]
+    assert agent._valid_tool_names_for_current_api_call() == {
+        "retrieve_tools",
+        "read_file",
+        "terminal",
+    }
     assert agent._retrieved_tool_names == ["read_file", "terminal"]
 
 
@@ -262,8 +271,8 @@ def test_cli_retrieve_tools_selects_tools_when_platform_enabled(monkeypatch):
     payload = json.loads(agent._retrieve_tools("fix test"))
 
     assert payload["success"] is True
-    assert _api_tool_names(agent) == _STABLE_RETRIEVAL_TOOL_NAMES
-    assert agent._valid_tool_names_for_current_api_call() == _STABLE_RETRIEVAL_VALID_NAMES
+    assert _api_tool_names(agent) == ["retrieve_tools", "patch"]
+    assert agent._valid_tool_names_for_current_api_call() == {"retrieve_tools", "patch"}
     assert agent._retrieved_tool_names == ["patch"]
 
 
@@ -303,7 +312,7 @@ def test_invalid_hidden_tool_feedback_points_to_retrieve_tools(monkeypatch):
 
     assert "currently hidden" in message
     assert "Call retrieve_tools first" in message
-    assert "call it through call_retrieved_tool" in message
+    assert "call the returned tool by its native name" in message
 
 
 def test_invalid_unknown_tool_feedback_mentions_retrieve_tools_when_active(monkeypatch):
@@ -312,7 +321,7 @@ def test_invalid_unknown_tool_feedback_mentions_retrieve_tools_when_active(monke
     message = agent._invalid_tool_call_feedback("not_a_tool", _STABLE_RETRIEVAL_VALID_NAMES)
 
     assert "not currently available" in message
-    assert "Available tools: call_retrieved_tool, retrieve_tools" in message
+    assert "Available tools: retrieve_tools" in message
     assert "call retrieve_tools first" in message
 
 
@@ -374,7 +383,7 @@ def test_new_user_turn_resets_to_retrieval_only(monkeypatch):
 
     agent._tool_retrieval_select_fn = fake_select
     json.loads(agent._retrieve_tools("run commands"))
-    assert _api_tool_names(agent) == _STABLE_RETRIEVAL_TOOL_NAMES
+    assert _api_tool_names(agent) == ["retrieve_tools", "terminal"]
     assert agent._retrieved_tool_names == ["terminal"]
 
     agent._prepare_tool_prefilter_for_api_call("next task", [{"role": "user", "content": "next task"}])
@@ -384,114 +393,7 @@ def test_new_user_turn_resets_to_retrieval_only(monkeypatch):
     assert agent._retrieved_tool_names == []
 
 
-def test_call_retrieved_tool_dispatches_latest_retrieved_native_tool(monkeypatch):
-    agent = _bare_agent(monkeypatch, "acp")
-
-    def fake_select(tools, query, config, platform=None, prepared_index=None):
-        return ToolRetrievalResult(
-            selected_tools=[tools[1]],
-            selected_names=["terminal"],
-            scores={"terminal": 1.0},
-        )
-
-    calls = {}
-
-    def fake_handle_function_call(function_name, function_args, task_id, **kwargs):
-        calls["function_name"] = function_name
-        calls["function_args"] = function_args
-        calls["task_id"] = task_id
-        calls["kwargs"] = kwargs
-        return json.dumps({"ok": True})
-
-    monkeypatch.setattr(run_agent, "handle_function_call", fake_handle_function_call)
-    agent._tool_retrieval_select_fn = fake_select
-    json.loads(agent._retrieve_tools("run commands"))
-
-    result = json.loads(
-        agent._call_retrieved_tool(
-            "terminal",
-            {"command": "pwd"},
-            "task-1",
-            tool_call_id="call-1",
-        )
-    )
-
-    assert result == {"ok": True}
-    assert calls["function_name"] == "terminal"
-    assert calls["function_args"] == {"command": "pwd"}
-    assert calls["task_id"] == "task-1"
-    assert calls["kwargs"]["tool_call_id"] == "call-1"
-    assert calls["kwargs"]["session_id"] == "session"
-    assert set(calls["kwargs"]["enabled_tools"]) == {"terminal"}
-    assert calls["kwargs"]["skip_pre_tool_call_hook"] is True
-
-
-def test_call_retrieved_tool_rejects_tool_not_returned_by_latest_retrieval(monkeypatch):
-    agent = _bare_agent(monkeypatch, "acp")
-
-    def fake_select(tools, query, config, platform=None, prepared_index=None):
-        return ToolRetrievalResult(
-            selected_tools=[tools[1]],
-            selected_names=["terminal"],
-            scores={"terminal": 1.0},
-        )
-
-    def fail_handle_function_call(*_args, **_kwargs):
-        raise AssertionError("unretrieved tool should not dispatch")
-
-    monkeypatch.setattr(run_agent, "handle_function_call", fail_handle_function_call)
-    agent._tool_retrieval_select_fn = fake_select
-    json.loads(agent._retrieve_tools("run commands"))
-
-    result = json.loads(
-        agent._call_retrieved_tool(
-            "patch",
-            {"path": "app.py"},
-            "task-1",
-            tool_call_id="call-1",
-        )
-    )
-
-    assert result["success"] is False
-    assert "was not returned by the latest retrieve_tools call" in result["error"]
-    assert result["retrieved_tools"] == ["terminal"]
-
-
-def test_call_retrieved_tool_accepts_arguments_json_string(monkeypatch):
-    agent = _bare_agent(monkeypatch, "acp")
-
-    def fake_select(tools, query, config, platform=None, prepared_index=None):
-        return ToolRetrievalResult(
-            selected_tools=[tools[2]],
-            selected_names=["patch"],
-            scores={"patch": 1.0},
-        )
-
-    calls = {}
-
-    def fake_handle_function_call(function_name, function_args, task_id, **kwargs):
-        calls["function_name"] = function_name
-        calls["function_args"] = function_args
-        return "patched"
-
-    monkeypatch.setattr(run_agent, "handle_function_call", fake_handle_function_call)
-    agent._tool_retrieval_select_fn = fake_select
-    json.loads(agent._retrieve_tools("edit files"))
-
-    result = agent._call_retrieved_tool(
-        "patch",
-        '{"path": "app.py", "old": "a", "new": "b"}',
-        "task-1",
-    )
-
-    assert result == "patched"
-    assert calls == {
-        "function_name": "patch",
-        "function_args": {"path": "app.py", "old": "a", "new": "b"},
-    }
-
-
-def test_call_retrieved_tool_normalizes_flattened_wrapper_arguments(monkeypatch):
+def test_retrieved_native_tool_dispatches_directly(monkeypatch):
     agent = _bare_agent(monkeypatch, "acp")
 
     def fake_select(tools, query, config, platform=None, prepared_index=None):
@@ -516,8 +418,8 @@ def test_call_retrieved_tool_normalizes_flattened_wrapper_arguments(monkeypatch)
 
     result = json.loads(
         agent._invoke_tool(
-            "call_retrieved_tool",
-            {"name": "terminal", "command": "pwd", "timeout": 180},
+            "terminal",
+            {"command": "pwd"},
             "task-1",
             tool_call_id="call-1",
         )
@@ -525,21 +427,39 @@ def test_call_retrieved_tool_normalizes_flattened_wrapper_arguments(monkeypatch)
 
     assert result == {"ok": True}
     assert calls["function_name"] == "terminal"
-    assert calls["function_args"] == {"command": "pwd", "timeout": 180}
+    assert calls["function_args"] == {"command": "pwd"}
     assert calls["task_id"] == "task-1"
     assert calls["kwargs"]["tool_call_id"] == "call-1"
+    assert set(agent._valid_tool_names_for_current_api_call()) == {
+        "retrieve_tools",
+        "terminal",
+    }
 
 
-def test_call_retrieved_tool_prefers_explicit_arguments_over_extra_wrapper_keys(monkeypatch):
+def test_unretrieved_native_tool_is_not_currently_valid(monkeypatch):
     agent = _bare_agent(monkeypatch, "acp")
 
-    assert agent._normalize_call_retrieved_tool_args(
-        {
-            "name": "terminal",
-            "arguments": {"command": "pwd"},
-            "command": "ls",
-        }
-    ) == ("terminal", {"command": "pwd"})
+    def fake_select(tools, query, config, platform=None, prepared_index=None):
+        return ToolRetrievalResult(
+            selected_tools=[tools[1]],
+            selected_names=["terminal"],
+            scores={"terminal": 1.0},
+        )
+
+    agent._tool_retrieval_select_fn = fake_select
+    json.loads(agent._retrieve_tools("run commands"))
+
+    assert agent._valid_tool_names_for_current_api_call() == {
+        "retrieve_tools",
+        "terminal",
+    }
+    assert "patch" not in agent._valid_tool_names_for_current_api_call()
+    message = agent._invalid_tool_call_feedback(
+        "patch",
+        agent._valid_tool_names_for_current_api_call(),
+    )
+    assert "currently hidden" in message
+    assert "retrieve_tools" in message
 
 
 def test_tool_name_repair_only_uses_current_api_tool_names(monkeypatch):

@@ -899,9 +899,7 @@ class TestBuildSystemPrompt:
         assert MEMORY_GUIDANCE not in prompt
 
     @pytest.mark.parametrize("platform", ["acp", "cli"])
-    def test_tool_retrieval_guidance_when_retrieval_enabled(self, platform):
-        from agent.prompt_builder import TOOL_RETRIEVAL_GUIDANCE
-
+    def test_tool_retrieval_uses_tool_description_when_retrieval_enabled(self, platform):
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal", "read_file")),
             patch("run_agent.check_toolset_requirements", return_value={}),
@@ -930,16 +928,13 @@ class TestBuildSystemPrompt:
             )
 
         prompt = retrieval_agent._build_system_prompt()
+        api_tools = retrieval_agent._tools_for_api()
 
-        assert TOOL_RETRIEVAL_GUIDANCE in prompt
-        assert [tool["function"]["name"] for tool in retrieval_agent._tools_for_api()] == [
-            "retrieve_tools",
-            "call_retrieved_tool",
-        ]
+        assert "Tool retrieval is enabled" not in prompt
+        assert [tool["function"]["name"] for tool in api_tools] == ["retrieve_tools"]
+        assert "Whenever you need a tool" in api_tools[0]["function"]["description"]
 
-    def test_tool_retrieval_guidance_absent_when_retrieval_disabled(self):
-        from agent.prompt_builder import TOOL_RETRIEVAL_GUIDANCE
-
+    def test_retrieve_tools_absent_when_retrieval_disabled(self):
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal", "read_file")),
             patch("run_agent.check_toolset_requirements", return_value={}),
@@ -967,7 +962,11 @@ class TestBuildSystemPrompt:
 
         prompt = retrieval_agent._build_system_prompt()
 
-        assert TOOL_RETRIEVAL_GUIDANCE not in prompt
+        assert "Tool retrieval is enabled" not in prompt
+        assert [tool["function"]["name"] for tool in retrieval_agent._tools_for_api()] == [
+            "terminal",
+            "read_file",
+        ]
 
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()

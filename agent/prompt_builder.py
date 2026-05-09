@@ -197,18 +197,6 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "without acting are not acceptable."
 )
 
-TOOL_RETRIEVAL_GUIDANCE = (
-    "Tool retrieval is enabled. Most native tool schemas are hidden at first. "
-    "When a task requires a tool, call `retrieve_tools` with a concise `query` "
-    "describing the needed capability or next action. The retrieval tool will "
-    "return matching native tool schemas for the current user turn; after it "
-    "returns, call `call_retrieved_tool` with `name` set to a returned tool name "
-    "and `arguments` matching that tool's schema. If a suitable tool was already "
-    "retrieved in this user turn, call it through `call_retrieved_tool` instead "
-    "of calling retrieve_tools again. Do not guess hidden tool names or arguments "
-    "before retrieving them."
-)
-
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")

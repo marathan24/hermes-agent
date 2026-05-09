@@ -134,7 +134,6 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
-    TOOL_RETRIEVAL_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -307,15 +306,22 @@ class IterationBudget:
 
 # Tools that must never run concurrently (interactive / user-facing).
 # When any of these appear in a batch, we fall back to sequential execution.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "retrieve_tools", "call_retrieved_tool"})
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "retrieve_tools"})
 
 _RETRIEVE_TOOLS_TOOL_DEFINITION = {
     "type": "function",
     "function": {
         "name": "retrieve_tools",
         "description": (
-            "Retrieve native Hermes tool schemas for the current user turn. "
-            "Use this before calling call_retrieved_tool."
+            "Retrieve hidden native Hermes tools for the current user turn. "
+            "Whenever you need a tool that is not currently visible, call this "
+            "function with a concise query describing the immediate capability "
+            "or action you need, such as 'read project files', 'run shell "
+            "commands', or 'edit files and run tests'. Hermes will return the "
+            "matching native tool schemas and make those tools directly "
+            "available in the next model call; then call the returned tools by "
+            "their native names. Call retrieve_tools again only when you need a "
+            "different hidden capability."
         ),
         "parameters": {
             "type": "object",
@@ -329,36 +335,6 @@ _RETRIEVE_TOOLS_TOOL_DEFINITION = {
                 },
             },
             "required": ["query"],
-        },
-    },
-}
-
-_CALL_RETRIEVED_TOOL_DEFINITION = {
-    "type": "function",
-    "function": {
-        "name": "call_retrieved_tool",
-        "description": (
-            "Call a native Hermes tool returned by retrieve_tools. The name must "
-            "match one of the latest retrieved tool schemas."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Name of a tool returned by the latest retrieve_tools call.",
-                },
-                "arguments": {
-                    "type": "object",
-                    "description": (
-                        "Arguments for the retrieved tool, matching the parameters "
-                        "schema returned by retrieve_tools."
-                    ),
-                    "additionalProperties": True,
-                },
-            },
-            "required": ["name", "arguments"],
-            "additionalProperties": False,
         },
     },
 }
@@ -4886,15 +4862,11 @@ class AIAgent:
     def _retrieve_tools_tool_definition(self) -> dict:
         return copy.deepcopy(_RETRIEVE_TOOLS_TOOL_DEFINITION)
 
-    def _call_retrieved_tool_definition(self) -> dict:
-        return copy.deepcopy(_CALL_RETRIEVED_TOOL_DEFINITION)
-
     def _set_api_tools_to_retrieval_only(self) -> None:
         self._current_api_tools = [
             self._retrieve_tools_tool_definition(),
-            self._call_retrieved_tool_definition(),
         ]
-        self._current_valid_tool_names = {"retrieve_tools", "call_retrieved_tool"}
+        self._current_valid_tool_names = {"retrieve_tools"}
 
     def _clear_retrieved_tools(self) -> None:
         self._retrieved_tool_names = []
@@ -4965,13 +4937,13 @@ class AIAgent:
             return (
                 f"Tool '{tool_name}' is currently hidden. "
                 "Call retrieve_tools first with a concise query for the needed capability; "
-                "then call it through call_retrieved_tool with the returned schema."
+                "after retrieval returns, call the returned tool by its native name."
             )
         if getattr(self, "_tool_retrieval_enabled", False):
             return (
                 f"Tool '{tool_name}' is not currently available. "
                 f"Available tools: {available}. If you need a hidden native tool, "
-                "call retrieve_tools first, then call_retrieved_tool."
+                "call retrieve_tools first, then call the returned tool by its native name."
             )
         return f"Tool '{tool_name}' does not exist. Available tools: {available}"
 
@@ -5074,8 +5046,6 @@ class AIAgent:
             if not selected_tools:
                 raise RuntimeError("retrieval returned no usable schemas")
 
-            self._set_api_tools_to_retrieval_only()
-            self._tool_retrieval_last_fallback_reason = None
             scores = getattr(result, "scores", {}) or {}
             returned_tools = []
             exposed_names = [
@@ -5083,6 +5053,12 @@ class AIAgent:
                 for tool in selected_tools
                 if isinstance(tool, dict) and tool.get("function", {}).get("name")
             ]
+            self._current_api_tools = [
+                self._retrieve_tools_tool_definition(),
+                *copy.deepcopy(selected_tools),
+            ]
+            self._current_valid_tool_names = {"retrieve_tools", *exposed_names}
+            self._tool_retrieval_last_fallback_reason = None
             for tool in selected_tools:
                 name = tool.get("function", {}).get("name") if isinstance(tool, dict) else None
                 if not name:
@@ -5107,10 +5083,10 @@ class AIAgent:
                     "retrieved_tools": exposed_names,
                     "tools": returned_tools,
                     "message": (
-                        "These native tool schemas are available for this user turn. "
-                        "Call call_retrieved_tool with name set to one of retrieved_tools "
-                        "and arguments matching that tool's parameters. Call retrieve_tools "
-                        "again only when you need a different capability."
+                        "These native tool schemas are now available for this user turn. "
+                        "In the next model call, call one of retrieved_tools directly by "
+                        "its native name with arguments matching that tool's parameters. "
+                        "Call retrieve_tools again only when you need a different capability."
                     ),
                 },
                 ensure_ascii=False,
@@ -5184,9 +5160,6 @@ class AIAgent:
             tool_guidance.append(SKILLS_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
-
-        if getattr(self, "_tool_retrieval_enabled", False):
-            prompt_parts.append(TOOL_RETRIEVAL_GUIDANCE)
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
@@ -9626,131 +9599,6 @@ class AIAgent:
                 skip_pre_tool_call_hook=True,
             )
 
-    def _call_retrieved_tool(
-        self,
-        name: str,
-        arguments: Any,
-        effective_task_id: str,
-        tool_call_id: Optional[str] = None,
-        messages: list = None,
-        return_metadata: bool = False,
-    ) -> str | tuple[str, str, dict]:
-        """Validate and dispatch a native tool returned by retrieve_tools."""
-        def _finish(result: str, executed_name: str = "call_retrieved_tool", executed_args: dict | None = None):
-            if return_metadata:
-                return result, executed_name, executed_args or {}
-            return result
-
-        if not getattr(self, "_tool_retrieval_enabled", False):
-            return _finish(json.dumps({
-                "success": False,
-                "error": "tool retrieval is not enabled for this session",
-            }, ensure_ascii=False))
-
-        tool_name = str(name or "").strip()
-        if not tool_name:
-            return _finish(json.dumps({
-                "success": False,
-                "error": "name is required",
-                "message": "Call retrieve_tools first, then call_retrieved_tool with a returned tool name.",
-            }, ensure_ascii=False))
-
-        if arguments is None:
-            tool_args = {}
-        elif isinstance(arguments, dict):
-            tool_args = arguments
-        elif isinstance(arguments, str):
-            try:
-                parsed = json.loads(arguments)
-            except json.JSONDecodeError as exc:
-                return _finish(json.dumps({
-                    "success": False,
-                    "error": f"arguments must be a JSON object: {exc}",
-                }, ensure_ascii=False), tool_name, {})
-            if not isinstance(parsed, dict):
-                return _finish(json.dumps({
-                    "success": False,
-                    "error": "arguments must be a JSON object",
-                }, ensure_ascii=False), tool_name, {})
-            tool_args = parsed
-        else:
-            return _finish(json.dumps({
-                "success": False,
-                "error": "arguments must be an object",
-            }, ensure_ascii=False), tool_name, {})
-
-        retrieved_names = list(getattr(self, "_retrieved_tool_names", []) or [])
-        if not retrieved_names:
-            return _finish(json.dumps({
-                "success": False,
-                "error": "no retrieved tools are available",
-                "message": "Call retrieve_tools with the needed capability before call_retrieved_tool.",
-            }, ensure_ascii=False), tool_name, tool_args)
-
-        if tool_name not in retrieved_names:
-            return _finish(json.dumps({
-                "success": False,
-                "error": f"tool '{tool_name}' was not returned by the latest retrieve_tools call",
-                "retrieved_tools": retrieved_names,
-                "message": "Call retrieve_tools again if you need a different native tool.",
-            }, ensure_ascii=False), tool_name, tool_args)
-
-        all_native_names = set(getattr(self, "_all_valid_tool_names", None) or set())
-        if tool_name not in all_native_names:
-            return _finish(json.dumps({
-                "success": False,
-                "error": f"tool '{tool_name}' is not in the native tool catalog",
-            }, ensure_ascii=False), tool_name, tool_args)
-
-        block_message = self._pre_tool_block_message(
-            tool_name,
-            tool_args,
-            effective_task_id,
-            tool_call_id=tool_call_id,
-        )
-        if block_message is not None:
-            return _finish(json.dumps({"error": block_message}, ensure_ascii=False), tool_name, tool_args)
-
-        if tool_name == "memory":
-            self._turns_since_memory = 0
-        elif tool_name == "skill_manage":
-            self._iters_since_skill = 0
-
-        self._checkpoint_before_tool_execution(tool_name, tool_args)
-        result = self._dispatch_agent_or_registry_tool(
-            tool_name,
-            tool_args,
-            effective_task_id,
-            tool_call_id=tool_call_id,
-            messages=messages,
-            enabled_tools=set(retrieved_names),
-        )
-        return _finish(result, tool_name, tool_args)
-
-    @staticmethod
-    def _normalize_call_retrieved_tool_args(function_args: dict) -> tuple[str, Any]:
-        """Return the retrieved tool name and native args from a wrapper call.
-
-        Some models flatten the native tool arguments into the wrapper call, e.g.
-        {"name": "terminal", "command": "pwd"}, instead of nesting them under
-        {"arguments": {"command": "pwd"}}. Preserve the documented nested shape
-        while tolerating that common flattened form.
-        """
-        if not isinstance(function_args, dict):
-            return "", {}
-
-        tool_name = function_args.get("name", "")
-        flattened_args = {
-            key: value
-            for key, value in function_args.items()
-            if key not in {"name", "arguments"}
-        }
-        if function_args.get("arguments") is None and flattened_args:
-            return tool_name, flattened_args
-        if "arguments" in function_args:
-            return tool_name, function_args.get("arguments")
-        return tool_name, flattened_args
-
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
@@ -9771,15 +9619,6 @@ class AIAgent:
 
         if function_name == "retrieve_tools":
             return self._retrieve_tools(function_args.get("query", ""))
-        if function_name == "call_retrieved_tool":
-            retrieved_tool_name, retrieved_tool_args = self._normalize_call_retrieved_tool_args(function_args)
-            return self._call_retrieved_tool(
-                retrieved_tool_name,
-                retrieved_tool_args,
-                effective_task_id,
-                tool_call_id=tool_call_id,
-                messages=messages,
-            )
         return self._dispatch_agent_or_registry_tool(
             function_name,
             function_args,
@@ -10265,21 +10104,6 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('retrieve_tools', function_args, tool_duration, result=function_result)}")
-            elif function_name == "call_retrieved_tool":
-                retrieved_tool_name, retrieved_tool_args = self._normalize_call_retrieved_tool_args(function_args)
-                function_result, executed_function_name, executed_function_args = self._call_retrieved_tool(
-                    retrieved_tool_name,
-                    retrieved_tool_args,
-                    effective_task_id,
-                    tool_call_id=tool_call.id,
-                    messages=messages,
-                    return_metadata=True,
-                )
-                tool_duration = time.time() - tool_start_time
-                if self._should_emit_quiet_tool_messages():
-                    self._vprint(
-                        f"  {_get_cute_tool_message_impl(executed_function_name, executed_function_args, tool_duration, result=function_result)}"
-                    )
             elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
                 function_result = _todo_tool(

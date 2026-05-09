@@ -572,7 +572,6 @@ _AGENT_LOOP_TOOLS = {
     "session_search",
     "delegate_task",
     "retrieve_tools",
-    "call_retrieved_tool",
 }
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
