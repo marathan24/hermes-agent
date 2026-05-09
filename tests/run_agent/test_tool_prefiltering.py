@@ -103,10 +103,11 @@ def test_retrieve_tools_selects_current_api_tools_from_model_query(monkeypatch):
     assert payload["success"] is True
     assert payload["exposed_tools"] == ["terminal", "read_file"]
     assert payload["retrieved_tools"] == ["terminal", "read_file"]
+    assert payload["tool_count"] == 2
     assert [tool["name"] for tool in payload["tools"]] == ["terminal", "read_file"]
     assert payload["tools"][0]["score"] == 1.0
     assert payload["tools"][0]["description"] == "terminal tool"
-    assert payload["tools"][0]["parameters"] == {"type": "object", "properties": {}}
+    assert "parameters" not in payload["tools"][0]
     assert _api_tool_names(agent) == ["retrieve_tools", "terminal", "read_file"]
     assert agent._valid_tool_names_for_current_api_call() == {
         "retrieve_tools",
@@ -177,6 +178,7 @@ def test_retrieve_tools_caps_current_visible_tools(monkeypatch):
     payload = json.loads(agent._retrieve_tools("read run and edit"))
 
     assert payload["exposed_tools"] == ["read_file", "terminal"]
+    assert payload["tool_count"] == 2
     assert [tool["name"] for tool in payload["tools"]] == ["read_file", "terminal"]
     assert _api_tool_names(agent) == ["retrieve_tools", "read_file", "terminal"]
     assert agent._valid_tool_names_for_current_api_call() == {

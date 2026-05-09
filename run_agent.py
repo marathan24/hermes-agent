@@ -4949,12 +4949,14 @@ class AIAgent:
 
     @staticmethod
     def _retrieved_tool_response_schema(tool: dict, score: Any = None) -> dict:
-        """Compact model-facing schema returned by retrieve_tools."""
+        """Compact model-facing tool entry returned by retrieve_tools."""
         fn = tool.get("function", {}) if isinstance(tool, dict) else {}
+        description = str(fn.get("description") or "")
+        if len(description) > 240:
+            description = description[:237].rstrip() + "..."
         item = {
             "name": fn.get("name", ""),
-            "description": fn.get("description", ""),
-            "parameters": copy.deepcopy(fn.get("parameters") or {"type": "object", "properties": {}}),
+            "description": description,
         }
         if score is not None:
             try:
@@ -5081,11 +5083,12 @@ class AIAgent:
                     "query": query,
                     "exposed_tools": exposed_names,
                     "retrieved_tools": exposed_names,
+                    "tool_count": len(exposed_names),
                     "tools": returned_tools,
                     "message": (
-                        "These native tool schemas are now available for this user turn. "
+                        "These native tools are now available for this user turn. "
                         "In the next model call, call one of retrieved_tools directly by "
-                        "its native name with arguments matching that tool's parameters. "
+                        "its native name; use the API-provided tool schema for arguments. "
                         "Call retrieve_tools again only when you need a different capability."
                     ),
                 },
