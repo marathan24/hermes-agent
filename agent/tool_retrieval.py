@@ -456,6 +456,18 @@ def preload_embedding_model(config: dict) -> None:
     _get_sentence_transformer_model(config or {})
 
 
+def clear_embedding_model_cache() -> None:
+    """Release cached local embedding models before interpreter shutdown."""
+    with _MODEL_CACHE_LOCK:
+        _MODEL_CACHE.clear()
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass
+
+
 def _tool_entries(tools: list[dict]) -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
     for tool in tools or []:

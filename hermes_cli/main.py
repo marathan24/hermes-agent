@@ -1350,6 +1350,14 @@ def cmd_chat(args):
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
+    finally:
+        if not no_tool_retrieval:
+            try:
+                from agent.tool_retrieval import clear_embedding_model_cache
+
+                clear_embedding_model_cache()
+            except Exception:
+                logger.debug("Tool retrieval model cleanup failed", exc_info=True)
 
 
 def cmd_gateway(args):
