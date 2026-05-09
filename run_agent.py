@@ -320,8 +320,9 @@ _RETRIEVE_TOOLS_TOOL_DEFINITION = {
             "commands', or 'edit files and run tests'. Hermes will return the "
             "matching native tool schemas and make those tools directly "
             "available in the next model call; then call the returned tools by "
-            "their native names. Call retrieve_tools again only when you need a "
-            "different hidden capability."
+            "their native names. Retrieved tools stay visible for the current "
+            "user turn. Call retrieve_tools again only when you need a different "
+            "hidden capability."
         ),
         "parameters": {
             "type": "object",
@@ -5032,17 +5033,30 @@ class AIAgent:
                 raise RuntimeError("retrieval returned no usable schemas")
 
             all_native_names = set(getattr(self, "_all_valid_tool_names", None) or ())
+            existing_names = [
+                str(name)
+                for name in (getattr(self, "_retrieved_tool_names", None) or [])
+                if str(name) in all_native_names
+            ]
             visible_names: list[str] = []
             seen_names: set[str] = set()
+            for name in existing_names:
+                if name not in seen_names:
+                    visible_names.append(name)
+                    seen_names.add(name)
+
+            newly_exposed_names: list[str] = []
             for name in selected_names:
                 if name not in all_native_names or name in seen_names:
                     continue
                 visible_names.append(name)
+                newly_exposed_names.append(name)
                 seen_names.add(name)
 
             max_visible_tools = self._tool_retrieval_max_visible_tools(len(all_tools))
             if len(visible_names) > max_visible_tools:
                 visible_names = visible_names[:max_visible_tools]
+                newly_exposed_names = [name for name in newly_exposed_names if name in set(visible_names)]
 
             selected_tools = get_tool_definitions_for_names(all_tools, visible_names)
             if not selected_tools:
@@ -5050,6 +5064,12 @@ class AIAgent:
 
             scores = getattr(result, "scores", {}) or {}
             returned_tools = []
+            selected_visible_names = [
+                name
+                for name in selected_names
+                if name in set(visible_names)
+            ]
+            returned_tool_defs = get_tool_definitions_for_names(all_tools, selected_visible_names)
             exposed_names = [
                 tool.get("function", {}).get("name")
                 for tool in selected_tools
@@ -5061,7 +5081,7 @@ class AIAgent:
             ]
             self._current_valid_tool_names = {"retrieve_tools", *exposed_names}
             self._tool_retrieval_last_fallback_reason = None
-            for tool in selected_tools:
+            for tool in returned_tool_defs:
                 name = tool.get("function", {}).get("name") if isinstance(tool, dict) else None
                 if not name:
                     continue
@@ -5083,13 +5103,15 @@ class AIAgent:
                     "query": query,
                     "exposed_tools": exposed_names,
                     "retrieved_tools": exposed_names,
+                    "new_tools": newly_exposed_names,
                     "tool_count": len(exposed_names),
                     "tools": returned_tools,
                     "message": (
                         "These native tools are now available for this user turn. "
                         "In the next model call, call one of retrieved_tools directly by "
                         "its native name; use the API-provided tool schema for arguments. "
-                        "Call retrieve_tools again only when you need a different capability."
+                        "Tools already retrieved remain visible, so call retrieve_tools again "
+                        "only when you need a different hidden capability."
                     ),
                 },
                 ensure_ascii=False,

@@ -103,6 +103,7 @@ def test_retrieve_tools_selects_current_api_tools_from_model_query(monkeypatch):
     assert payload["success"] is True
     assert payload["exposed_tools"] == ["terminal", "read_file"]
     assert payload["retrieved_tools"] == ["terminal", "read_file"]
+    assert payload["new_tools"] == ["terminal", "read_file"]
     assert payload["tool_count"] == 2
     assert [tool["name"] for tool in payload["tools"]] == ["terminal", "read_file"]
     assert payload["tools"][0]["score"] == 1.0
@@ -118,7 +119,7 @@ def test_retrieve_tools_selects_current_api_tools_from_model_query(monkeypatch):
     assert agent.valid_tool_names == {"read_file", "terminal", "patch"}
 
 
-def test_retrieve_tools_replaces_visible_tools_within_user_turn(monkeypatch):
+def test_retrieve_tools_accumulates_visible_tools_within_user_turn(monkeypatch):
     agent = _bare_agent(monkeypatch, "acp")
 
     def fake_select(tools, query, config, platform=None, prepared_index=None):
@@ -143,10 +144,14 @@ def test_retrieve_tools_replaces_visible_tools_within_user_turn(monkeypatch):
     second = json.loads(agent._retrieve_tools("edit files"))
 
     assert first["exposed_tools"] == ["terminal"]
-    assert second["exposed_tools"] == ["patch"]
-    assert _api_tool_names(agent) == ["retrieve_tools", "patch"]
-    assert agent._valid_tool_names_for_current_api_call() == {"retrieve_tools", "patch"}
-    assert agent._retrieved_tool_names == ["patch"]
+    assert first["new_tools"] == ["terminal"]
+    assert first["tool_count"] == 1
+    assert second["exposed_tools"] == ["terminal", "patch"]
+    assert second["new_tools"] == ["patch"]
+    assert second["tool_count"] == 2
+    assert _api_tool_names(agent) == ["retrieve_tools", "terminal", "patch"]
+    assert agent._valid_tool_names_for_current_api_call() == {"retrieve_tools", "terminal", "patch"}
+    assert agent._retrieved_tool_names == ["terminal", "patch"]
 
 
 def test_retrieve_tools_caps_current_visible_tools(monkeypatch):
@@ -178,6 +183,7 @@ def test_retrieve_tools_caps_current_visible_tools(monkeypatch):
     payload = json.loads(agent._retrieve_tools("read run and edit"))
 
     assert payload["exposed_tools"] == ["read_file", "terminal"]
+    assert payload["new_tools"] == ["read_file", "terminal"]
     assert payload["tool_count"] == 2
     assert [tool["name"] for tool in payload["tools"]] == ["read_file", "terminal"]
     assert _api_tool_names(agent) == ["retrieve_tools", "read_file", "terminal"]
