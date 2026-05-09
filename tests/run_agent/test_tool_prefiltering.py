@@ -279,9 +279,14 @@ def test_cli_retrieve_tools_selects_tools_when_platform_enabled(monkeypatch):
     payload = json.loads(agent._retrieve_tools("fix test"))
 
     assert payload["success"] is True
-    assert _api_tool_names(agent) == ["retrieve_tools", "patch"]
-    assert agent._valid_tool_names_for_current_api_call() == {"retrieve_tools", "patch"}
-    assert agent._retrieved_tool_names == ["patch"]
+    assert _api_tool_names(agent) == ["retrieve_tools", "patch", "read_file", "terminal"]
+    assert agent._valid_tool_names_for_current_api_call() == {
+        "retrieve_tools",
+        "patch",
+        "read_file",
+        "terminal",
+    }
+    assert agent._retrieved_tool_names == ["patch", "read_file", "terminal"]
 
 
 def test_retrieve_tools_failure_returns_error_without_full_catalog_fallback(monkeypatch):

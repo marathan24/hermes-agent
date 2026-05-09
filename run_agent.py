@@ -4883,6 +4883,59 @@ class AIAgent:
         max_tools = max(1, max_tools)
         return min(max_tools, max(1, int(total_native_tools or 1)))
 
+    def _expand_retrieved_tool_names(
+        self,
+        query: str,
+        selected_names: list[str],
+        all_native_names: set[str],
+    ) -> list[str]:
+        """Add obvious CLI companion tools for broad coding capability queries."""
+        expanded: list[str] = []
+        seen: set[str] = set()
+
+        def add(name: str) -> None:
+            if name in all_native_names and name not in seen:
+                expanded.append(name)
+                seen.add(name)
+
+        for name in selected_names:
+            add(name)
+
+        if getattr(self, "platform", None) != "cli":
+            return expanded
+
+        query_l = str(query or "").lower()
+        selected_set = set(expanded)
+
+        def mentions(*terms: str) -> bool:
+            return any(term in query_l for term in terms)
+
+        if mentions("file", "files", "project", "app", "code", "read", "inspect", "list", "search") or (
+            selected_set & {"read_file", "search_files", "write_file", "patch"}
+        ):
+            add("search_files")
+            add("read_file")
+
+        if mentions("write", "edit", "patch", "modify", "create", "update", "implement", "fix") or (
+            selected_set & {"write_file", "patch"}
+        ):
+            add("write_file")
+            add("patch")
+
+        if mentions("run", "test", "tests", "pytest", "shell", "command", "commands", "terminal", "curl"):
+            add("terminal")
+
+        if mentions("server", "background", "process", "start", "stop", "health"):
+            add("process")
+
+        if mentions("skill", "skills"):
+            add("skill_view")
+
+        if mentions("todo", "plan"):
+            add("todo")
+
+        return expanded
+
     def _tools_for_api(self) -> list:
         if not getattr(self, "_tool_retrieval_enabled", False):
             return self.tools or []
@@ -5029,6 +5082,11 @@ class AIAgent:
                 for name in (getattr(result, "selected_names", None) or [])
                 if str(name)
             ]
+            selected_names = self._expand_retrieved_tool_names(
+                query,
+                selected_names,
+                all_native_names=set(getattr(self, "_all_valid_tool_names", None) or ()),
+            )
             if not selected_names:
                 raise RuntimeError("retrieval returned no usable schemas")
 
