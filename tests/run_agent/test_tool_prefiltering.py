@@ -447,7 +447,7 @@ def test_retrieved_native_tool_dispatches_directly(monkeypatch):
     }
 
 
-def test_native_tool_batch_resets_to_retrieval_only(monkeypatch):
+def test_native_tool_batch_keeps_retrieved_tools_visible(monkeypatch):
     agent = _bare_agent(monkeypatch, "acp")
 
     def fake_select(tools, query, config, platform=None, prepared_index=None):
@@ -461,39 +461,8 @@ def test_native_tool_batch_resets_to_retrieval_only(monkeypatch):
     json.loads(agent._retrieve_tools("run commands"))
     assert _api_tool_names(agent) == ["retrieve_tools", "terminal"]
 
-    tool_calls = [
-        types.SimpleNamespace(
-            function=types.SimpleNamespace(name="terminal"),
-        )
-    ]
-    agent._reset_retrieved_tools_after_tool_batch(tool_calls)
-
-    assert _api_tool_names(agent) == _STABLE_RETRIEVAL_TOOL_NAMES
-    assert agent._valid_tool_names_for_current_api_call() == _STABLE_RETRIEVAL_VALID_NAMES
-    assert agent._retrieved_tool_names == []
-
-
-def test_retrieve_tools_batch_keeps_newly_exposed_tools(monkeypatch):
-    agent = _bare_agent(monkeypatch, "acp")
-
-    def fake_select(tools, query, config, platform=None, prepared_index=None):
-        return ToolRetrievalResult(
-            selected_tools=[tools[1]],
-            selected_names=["terminal"],
-            scores={"terminal": 1.0},
-        )
-
-    agent._tool_retrieval_select_fn = fake_select
-    json.loads(agent._retrieve_tools("run commands"))
-
-    tool_calls = [
-        types.SimpleNamespace(
-            function=types.SimpleNamespace(name="retrieve_tools"),
-        )
-    ]
-    agent._reset_retrieved_tools_after_tool_batch(tool_calls)
-
     assert _api_tool_names(agent) == ["retrieve_tools", "terminal"]
+    assert agent._valid_tool_names_for_current_api_call() == {"retrieve_tools", "terminal"}
     assert agent._retrieved_tool_names == ["terminal"]
 
 

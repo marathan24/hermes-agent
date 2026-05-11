@@ -313,16 +313,17 @@ _RETRIEVE_TOOLS_TOOL_DEFINITION = {
     "function": {
         "name": "retrieve_tools",
         "description": (
-            "Retrieve hidden native Hermes tools for the next model call. "
+            "Retrieve hidden native Hermes tools and replace the current "
+            "retrieved native tool set. "
             "Whenever you need a tool that is not currently visible, call this "
             "function with a concise query describing the immediate capability "
             "or action you need, such as 'read project files', 'run shell "
             "commands', or 'edit files and run tests'. Hermes will return the "
-            "matching native tool schemas and make those tools directly "
-            "available in the next model call; then call the returned tools by "
-            "their native names. Retrieved native tools are visible for the "
-            "next model call only. Call retrieve_tools again when you need "
-            "another hidden capability."
+            "matching native tool schemas and make only those retrieved native "
+            "tools directly available; then call the returned tools by their "
+            "native names. Call retrieve_tools again when you need a different "
+            "hidden capability; each retrieval replaces the previous retrieved "
+            "native tool set instead of accumulating tools."
         ),
         "parameters": {
             "type": "object",
@@ -4930,18 +4931,6 @@ class AIAgent:
         self._clear_retrieved_tools()
         self._set_api_tools_to_retrieval_only()
 
-    def _reset_retrieved_tools_after_tool_batch(self, tool_calls) -> None:
-        """Hide native retrieved tools after the model has used one exposed batch."""
-        if not getattr(self, "_tool_retrieval_enabled", False):
-            return
-        names = [
-            str(getattr(getattr(tool_call, "function", None), "name", "") or "")
-            for tool_call in (tool_calls or [])
-        ]
-        if any(name and name != "retrieve_tools" for name in names):
-            self._clear_retrieved_tools()
-            self._set_api_tools_to_retrieval_only()
-
     def _invalid_tool_call_feedback(self, tool_name: str, active_valid_tool_names: set) -> str:
         """Return model-facing feedback for unavailable tool calls."""
         available = ", ".join(sorted(active_valid_tool_names))
@@ -5106,11 +5095,11 @@ class AIAgent:
                     "tool_count": len(exposed_names),
                     "tools": returned_tools,
                     "message": (
-                        "These native tools are now available for the next model call. "
-                        "In the next model call, call one of retrieved_tools directly by "
-                        "its native name; use the API-provided tool schema for arguments. "
-                        "After that tool-call batch, native retrieved tools are hidden again; "
-                        "call retrieve_tools again when you need another hidden capability."
+                        "These native tools are now available and replace any "
+                        "previously retrieved native tools. Call one of retrieved_tools "
+                        "directly by its native name; use the API-provided tool schema "
+                        "for arguments. Call retrieve_tools again when you need a "
+                        "different hidden capability."
                     ),
                 },
                 ensure_ascii=False,
@@ -9465,7 +9454,6 @@ class AIAgent:
                 assistant_message, messages, effective_task_id, api_call_count
             )
         finally:
-            self._reset_retrieved_tools_after_tool_batch(tool_calls)
             self._executing_tools = False
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
